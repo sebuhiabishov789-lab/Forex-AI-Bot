@@ -1,17 +1,20 @@
 ﻿import yfinance as yf
 import pandas as pd
 import requests
+import os
 from sklearn.ensemble import RandomForestClassifier
 
-# Sənin məlumatların
-TOKEN = "8848416622:AAHgfP7pNDOuDKVrX5KTjC0z9kDbMIUveeI"
-CHAT_ID = "8039332195"
+# GitHub Secrets-dən məlumatları alır
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
+CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage?chat_id={CHAT_ID}&text={message}"
-    requests.get(url)
+    if TOKEN and CHAT_ID:
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage?chat_id={CHAT_ID}&text={message}"
+        requests.get(url)
 
 def run_bot():
+    # Məlumatların yüklənməsi
     data = yf.download('EURUSD=X', period='60d', interval='15m', auto_adjust=True)
     if data.index.tz is not None:
         data.index = data.index.tz_localize(None)
@@ -22,7 +25,7 @@ def run_bot():
     low_cp = abs(data['Low'] - data['Close'].shift())
     atr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1).rolling(14).mean().iloc[-1]
     
-    # Model
+    # Modelin hazırlanması
     data['Return'] = data['Close'].pct_change()
     data['Range'] = (data['High'] - data['Low']) / data['Close']
     data.dropna(inplace=True)
@@ -32,7 +35,7 @@ def run_bot():
     prob = model.predict_proba(data[['Return', 'Range']].iloc[[-1]])[0][1]
     current_price = data['Close'].iloc[-1].item()
     
-    # Siqnal göndərmə
+    # Siqnalın göndərilməsi
     if prob > 0.60:
         msg = f"🚀 SİQNAL: ALIŞ (BUY)\nQiymət: {round(current_price, 5)}\nSL: {round(current_price - 1.5*atr, 5)}\nTP: {round(current_price + 3.0*atr, 5)}"
         send_telegram(msg)
