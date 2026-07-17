@@ -33,6 +33,10 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git add telegram_offset.txt
-          git commit -m "Update telegram offset" || echo "Dəyişiklik yoxdur"
-          git push
+          if [ -f telegram_offset.txt ]; then
+            git add telegram_offset.txt
+            git commit -m "Update telegram offset" || echo "Dəyişiklik yoxdur"
+            git push
+          else
+            echo "telegram_offset.txt tapılmadı, commit edilmədi."
+          fi
