@@ -1,7 +1,9 @@
 """
 market_utils.py — bot.py və status_check.py tərəfindən paylaşılan ortaq funksiyalar.
-Data yükləmə, indiqator hesablamaları, model öyrətmə və çoxlu zaman dilimi
-trend hesabatı burada cəmlənib ki, kod təkrarlanmasın.
+Data yükləmə, indiqator hesablamaları, model öyrətmə, çoxlu zaman dilimi
+trend hesabatı, trend xətti (trendline), support/resistance və sadə
+həndəsi fiqur tanıma (double top/bottom, triangle) burada cəmlənib ki,
+kod təkrarlanmasın.
 """
 
 import yfinance as yf
@@ -11,8 +13,12 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 
-FEATURES = ['Return', 'Range', 'RSI', 'MACD_hist', 'Trend_up']
+FEATURES = ['Return', 'Range', 'RSI', 'MACD_hist', 'Trend_up', 'Trend_slope', 'Dist_to_trendline']
 
+
+# ---------------------------------------------------------------------------
+# Klassik indiqatorlar
+# ---------------------------------------------------------------------------
 
 def compute_rsi(close, period=14):
     delta = close.diff()
@@ -83,6 +89,97 @@ def format_trends_block(trends):
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Texniki analiz: pivot nöqtələr, trend xətti, support/resistance, fiqurlar
+# ---------------------------------------------------------------------------
+
+def find_pivots(data, window=5):
+    """Local maksimum/minimum (pivot high/low) nöqtələrini tapır."""
+    highs = data['High']
+    lows = data['Low']
+    pivot_high = (highs == highs.rolling(window * 2 + 1, center=True).max())
+    pivot_low = (lows == lows.rolling(window * 2 + 1, center=True).min())
+    return pivot_high.fillna(False), pivot_low.fillna(False)
+
+
+def compute_trendline(data, pivot_mask, lookback=50):
+    """
+    Son `lookback` bar içindəki pivot nöqtələr üzərindən xətti reqressiya
+    ilə trend xəttinin meylini (slope) və cari nöqtədəki qiymətini qaytarır.
+    """
+    recent = data.iloc[-lookback:]
+    mask = pivot_mask.iloc[-lookback:]
+    pts = recent.loc[mask, 'Close']
+
+    if len(pts) < 2:
+        return 0.0, None  # kifayət qədər pivot yoxdur
+
+    x = np.arange(len(pts))
+    y = pts.values
+    slope, intercept = np.polyfit(x, y, 1)
+    line_value_now = slope * (len(recent) - 1) + intercept
+    return float(slope), float(line_value_now)
+
+
+def detect_support_resistance(data, window=20):
+    """
+    Son barlarda qiymətin ən çox toxunduğu pivot nöqtələri
+    support/resistance kimi qaytarır (cari qiymətə ən yaxın olanlar).
+    """
+    recent = data.iloc[-window * 3:]
+    ph, pl = find_pivots(recent, window=3)
+
+    levels = pd.concat([recent.loc[ph, 'High'], recent.loc[pl, 'Low']])
+    if levels.empty:
+        return None, None
+
+    current_price = data['Close'].iloc[-1]
+    below = levels[levels < current_price]
+    above = levels[levels > current_price]
+
+    support = float(below.max()) if not below.empty else None
+    resistance = float(above.min()) if not above.empty else None
+    return support, resistance
+
+
+def detect_pattern(data, window=5, lookback=60, tolerance=0.002):
+    """
+    Sadələşdirilmiş fiqur tanıma:
+    - Double Top: iki bənzər hündürlük pivotu
+    - Double Bottom: iki bənzər aşağı pivot
+    - Triangle (converging): pivot high-lar enir, pivot low-lar qalxır
+    """
+    recent = data.iloc[-lookback:]
+    ph, pl = find_pivots(recent, window=window)
+
+    highs = recent.loc[ph, 'High']
+    lows = recent.loc[pl, 'Low']
+
+    pattern = "Yoxdur"
+
+    if len(highs) >= 2:
+        last_two_highs = highs.iloc[-2:]
+        if abs(last_two_highs.iloc[0] - last_two_highs.iloc[1]) / last_two_highs.iloc[0] < tolerance:
+            pattern = "Double Top"
+
+    if len(lows) >= 2:
+        last_two_lows = lows.iloc[-2:]
+        if abs(last_two_lows.iloc[0] - last_two_lows.iloc[1]) / last_two_lows.iloc[0] < tolerance:
+            pattern = "Double Bottom" if pattern == "Yoxdur" else pattern + " / Double Bottom"
+
+    if len(highs) >= 2 and len(lows) >= 2:
+        high_slope = np.polyfit(np.arange(len(highs)), highs.values, 1)[0]
+        low_slope = np.polyfit(np.arange(len(lows)), lows.values, 1)[0]
+        if high_slope < 0 and low_slope > 0:
+            pattern = "Triangle (converging)"
+
+    return pattern
+
+
+# ---------------------------------------------------------------------------
+# Data yükləmə və feature mühəndisliyi
+# ---------------------------------------------------------------------------
+
 def load_raw_data():
     """EUR/USD 15 dəqiqəlik datanı yfinance-dən yükləyir və təmizləyir."""
     data = yf.download('EURUSD=X', period='60d', interval='15m', auto_adjust=True)
@@ -111,6 +208,14 @@ def build_features(data):
     data['Trend_up'] = (data['EMA_fast'] > data['EMA_slow']).astype(int)
     data['ATR'] = compute_atr(data)
 
+    # --- Trend xətti (trendline) əsaslı feature-lar ---
+    ph, _pl = find_pivots(data, window=5)
+    slope, trendline_val = compute_trendline(data, ph, lookback=50)
+    data['Trend_slope'] = slope
+    data['Dist_to_trendline'] = (
+        (data['Close'] - trendline_val) / data['Close'] if trendline_val else 0.0
+    )
+
     horizon = 4  # ≈1 saat irəli (4 x 15dəq)
     data['Future_return'] = data['Close'].shift(-horizon) / data['Close'] - 1
     data['Target'] = (data['Future_return'] > 0).astype(int)
@@ -122,7 +227,7 @@ def build_features(data):
 def get_current_status():
     """
     Tam status hesablamasını edir: data yükləmə, feature-lar, model öyrətmə,
-    canlı proqnoz və çoxlu zaman dilimi trendləri.
+    canlı proqnoz, çoxlu zaman dilimi trendlər, support/resistance və fiqur.
 
     Qaytarır: dict və ya None (data kifayət deyilsə).
     """
@@ -152,6 +257,8 @@ def get_current_status():
     trend_up = bool(data['Trend_up'].iloc[-1])
 
     mtf_trends = get_multi_timeframe_trends(data)
+    support, resistance = detect_support_resistance(data)
+    pattern = detect_pattern(data)
 
     return {
         'data': data,
@@ -161,4 +268,7 @@ def get_current_status():
         'current_atr': current_atr,
         'trend_up': trend_up,
         'mtf_trends': mtf_trends,
+        'support': support,
+        'resistance': resistance,
+        'pattern': pattern,
     }
