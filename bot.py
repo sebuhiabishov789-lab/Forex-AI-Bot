@@ -51,6 +51,57 @@ def compute_atr(data, period=14):
     return tr.rolling(period).mean()
 
 
+def resample_ohlc(data, rule):
+    agg = {
+        'Open': 'first',
+        'High': 'max',
+        'Low': 'min',
+        'Close': 'last',
+    }
+    resampled = data.resample(rule).agg(agg).dropna()
+    return resampled
+
+
+def get_trend_label(data, rule, ema_fast=20, ema_slow=50, min_bars=55):
+    """Verilən timeframe-ə resample edir və EMA20/EMA50 əsasında trend istiqamətini qaytarır."""
+    tf_data = resample_ohlc(data, rule)
+
+    if len(tf_data) < min_bars:
+        return "Data kifayət deyil"
+
+    ema_f = tf_data['Close'].ewm(span=ema_fast, adjust=False).mean()
+    ema_s = tf_data['Close'].ewm(span=ema_slow, adjust=False).mean()
+
+    is_up = ema_f.iloc[-1] > ema_s.iloc[-1]
+    return "🟢 Yuxarı" if is_up else "🔴 Aşağı"
+
+
+def get_multi_timeframe_trends(data):
+    """15dəq, 30dəq, 1saat, 4saat, 1gün üçün trend istiqamətlərini qaytarır."""
+    timeframes = {
+        "15 dəq": "15min",
+        "30 dəq": "30min",
+        "1 saat": "1h",
+        "4 saat": "4h",
+        "1 gün": "1D",
+    }
+    trends = {}
+    for label, rule in timeframes.items():
+        try:
+            trends[label] = get_trend_label(data, rule)
+        except Exception as e:
+            trends[label] = "N/A"
+            print(f"{label} trend hesablamasında xəta: {e}")
+    return trends
+
+
+def format_trends_block(trends):
+    lines = ["📊 Trend istiqaməti (çoxlu zaman dilimi):"]
+    for label, value in trends.items():
+        lines.append(f"  {label}: {value}")
+    return "\n".join(lines)
+
+
 def run_bot():
     # --- Məlumatların yüklənməsi ---
     data = yf.download('EURUSD=X', period='60d', interval='15m', auto_adjust=True)
@@ -122,6 +173,10 @@ def run_bot():
         print(f"Model dəqiqliyi kifayət qədər deyil ({test_acc:.2%}), siqnal göndərilmir.")
         return
 
+    # --- Çoxlu zaman dilimi trend hesabatı ---
+    mtf_trends = get_multi_timeframe_trends(data)
+    trends_block = format_trends_block(mtf_trends)
+
     signal_sent = False
 
     if prob > BUY_THRESHOLD and trend_up:
@@ -132,7 +187,8 @@ def run_bot():
             f"Qiymət: {round(current_price, 5)}\n"
             f"SL: {round(sl, 5)}\n"
             f"TP: {round(tp, 5)}\n"
-            f"Ehtimal: {prob:.0%} | Trend: Yuxarı | Model dəqiqliyi: {test_acc:.0%}"
+            f"Ehtimal: {prob:.0%} | Model dəqiqliyi: {test_acc:.0%}\n\n"
+            f"{trends_block}"
         )
         send_telegram(msg)
         signal_sent = True
@@ -145,7 +201,8 @@ def run_bot():
             f"Qiymət: {round(current_price, 5)}\n"
             f"SL: {round(sl, 5)}\n"
             f"TP: {round(tp, 5)}\n"
-            f"Ehtimal: {1 - prob:.0%} | Trend: Aşağı | Model dəqiqliyi: {test_acc:.0%}"
+            f"Ehtimal: {1 - prob:.0%} | Model dəqiqliyi: {test_acc:.0%}\n\n"
+            f"{trends_block}"
         )
         send_telegram(msg)
         signal_sent = True
