@@ -1,34 +1,29 @@
 name: Telegram Status Check
-
 on:
   schedule:
-    - cron: '*/5 * * * *'   # hər 5 dəqiqədən bir (GitHub-un icazə verdiyi minimum interval)
+    - cron: '*/10 * * * *'   # ehtiyat (backup) — cron-job.org işləməsə belə tam dayanmasın
   workflow_dispatch: {}       # Actions tabından əl ilə işə salmaq üçün
-
+  repository_dispatch:
+    types: [telegram-check]   # cron-job.org bunu tetikləyəcək
 permissions:
   contents: write
-
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - name: Repo-nu çıxar
         uses: actions/checkout@v4
-
       - name: Python quraşdır
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Asılılıqları quraşdır
         run: pip install -r requirements.txt
-
       - name: Telegram mesajlarını yoxla
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python status_check.py
-
       - name: Offset faylını commit et
         run: |
           git config --global user.name "github-actions"
