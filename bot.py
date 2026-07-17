@@ -3,10 +3,38 @@ import pandas as pd
 import numpy as np
 import requests
 import os
+import csv
+from datetime import datetime
 from urllib.parse import quote
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
+
+LOG_FILE = "signals_log.csv"
+
+
+def log_signal(direction, entry, sl, tp, prob, test_acc):
+    """Hər göndərilən siqnalı CSV-ə yazır ki, zamanla real statistika toplansın."""
+    file_exists = os.path.isfile(LOG_FILE)
+    with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow([
+                'timestamp_utc', 'direction', 'entry', 'sl', 'tp',
+                'probability', 'model_test_acc', 'outcome', 'closed_at', 'pip_result'
+            ])
+        writer.writerow([
+            datetime.utcnow().isoformat(),
+            direction,
+            round(entry, 5),
+            round(sl, 5),
+            round(tp, 5),
+            round(prob, 4),
+            round(test_acc, 4),
+            'OPEN',  # sonradan ayrı skriptlə SL/TP-yə toxunub-toxunmadığı yoxlanıla bilər
+            '',
+            '',
+        ])
 
 # GitHub Secrets-dən məlumatları alır
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -191,6 +219,7 @@ def run_bot():
             f"{trends_block}"
         )
         send_telegram(msg)
+        log_signal('BUY', current_price, sl, tp, prob, test_acc)
         signal_sent = True
 
     elif prob < SELL_THRESHOLD and not trend_up:
@@ -205,6 +234,7 @@ def run_bot():
             f"{trends_block}"
         )
         send_telegram(msg)
+        log_signal('SELL', current_price, sl, tp, 1 - prob, test_acc)
         signal_sent = True
 
     if not signal_sent:
