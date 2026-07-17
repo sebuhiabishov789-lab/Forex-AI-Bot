@@ -5,7 +5,6 @@ import requests
 import os
 import csv
 from datetime import datetime
-from urllib.parse import quote
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
@@ -43,9 +42,15 @@ CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 def send_telegram(message):
     if TOKEN and CHAT_ID:
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage?chat_id={CHAT_ID}&text={quote(message)}"
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": message,
+        }
         try:
-            requests.get(url, timeout=10)
+            resp = requests.post(url, data=payload, timeout=15)
+            if resp.status_code != 200:
+                print(f"Telegram cavabı uğursuz: {resp.status_code} - {resp.text}")
         except requests.RequestException as e:
             print(f"Telegram xətası: {e}")
     else:
