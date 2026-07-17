@@ -89,14 +89,21 @@ def run():
 
     saved_offset = get_saved_offset()
     first_run = saved_offset is None
+    fallback_offset = saved_offset if saved_offset is not None else 0
 
-    updates = get_updates(offset=saved_offset)
+    try:
+        updates = get_updates(offset=saved_offset)
+    except requests.RequestException as e:
+        print(f"getUpdates xətası: {e}")
+        save_offset(fallback_offset)  # fayl hər zaman mövcud olsun deyə
+        return
 
     if not updates:
         print("Yeni mesaj yoxdur.")
+        save_offset(fallback_offset)  # fayl hər zaman mövcud olsun deyə
         return
 
-    max_update_id = saved_offset if saved_offset is not None else 0
+    max_update_id = fallback_offset
 
     for update in updates:
         update_id = update.get("update_id", 0)
