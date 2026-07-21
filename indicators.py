@@ -10,6 +10,8 @@ def calculate_rsi(data, period=14):
 
     return rsi_indicator.rsi()
 
+
+
 def calculate_ema(data, period=50):
     ema_indicator = ta.trend.EMAIndicator(
         close=data["close"],
@@ -18,7 +20,21 @@ def calculate_ema(data, period=50):
 
     return ema_indicator.ema_indicator()
 
+
+
+def calculate_ema200(data):
+
+    ema_indicator = ta.trend.EMAIndicator(
+        close=data["close"],
+        window=200
+    )
+
+    return ema_indicator.ema_indicator()
+
+
+
 def calculate_macd(data):
+
     macd_indicator = ta.trend.MACD(
         close=data["close"]
     )
@@ -29,7 +45,10 @@ def calculate_macd(data):
         "histogram": macd_indicator.macd_diff()
     }
 
+
+
 def calculate_bollinger(data, period=20):
+
     bollinger = ta.volatility.BollingerBands(
         close=data["close"],
         window=period
@@ -41,6 +60,8 @@ def calculate_bollinger(data, period=20):
         "lower": bollinger.bollinger_lband()
     }
 
+
+
 def calculate_adx(data, period=14):
 
     adx_indicator = ta.trend.ADXIndicator(
@@ -51,6 +72,9 @@ def calculate_adx(data, period=14):
     )
 
     return adx_indicator.adx()
+
+
+
 def calculate_atr(data, period=14):
 
     atr_indicator = ta.volatility.AverageTrueRange(
@@ -61,4 +85,3 @@ def calculate_atr(data, period=14):
     )
 
     return atr_indicator.average_true_range()
-
