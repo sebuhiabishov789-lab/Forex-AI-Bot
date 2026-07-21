@@ -1,63 +1,95 @@
 from logger import logger
 
 
-def generate_signal(rsi, ema, price, macd, signal, upper=None, lower=None):
+def generate_signal(
+        rsi,
+        ema,
+        price,
+        macd,
+        signal,
+        upper,
+        lower
+    ):
 
     try:
+
         score = 0
+        reasons = []
+
+        total_points = 6
 
 
-        # RSI analiz
         if rsi < 30:
-            score += 2
+            score += 1
+            reasons.append("RSI oversold BUY")
 
         elif rsi > 70:
-            score -= 2
+            score -= 1
+            reasons.append("RSI overbought SELL")
 
 
-        # Trend EMA
         if price > ema:
             score += 1
+            reasons.append("Price above EMA BUY")
 
         elif price < ema:
             score -= 1
+            reasons.append("Price below EMA SELL")
 
 
-        # MACD trend
         if macd > signal:
-            score += 2
+            score += 1
+            reasons.append("MACD bullish")
 
         elif macd < signal:
-            score -= 2
+            score -= 1
+            reasons.append("MACD bearish")
 
 
-        # Bollinger
-        if upper is not None and lower is not None:
+        if price <= lower:
+            score += 1
+            reasons.append("Near lower Bollinger BUY")
 
-            if price <= lower:
-                score += 1
-
-            elif price >= upper:
-                score -= 1
+        elif price >= upper:
+            score -= 1
+            reasons.append("Near upper Bollinger SELL")
 
 
-        if score >= 3:
-            result = "BUY"
+        confidence = abs(score) / total_points * 100
 
-        elif score <= -3:
-            result = "SELL"
+
+        if score >= 2:
+            decision = "BUY"
+
+        elif score <= -2:
+            decision = "SELL"
 
         else:
-            result = "HOLD"
+            decision = "HOLD"
 
 
-        logger.info(
-            f"AI Signal: {result} | Score: {score}"
-        )
+        result = {
+            "decision": decision,
+            "confidence": round(confidence, 2),
+            "score": score,
+            "reasons": reasons
+        }
+
+
+        logger.info(f"AI Result: {result}")
 
         return result
 
 
     except Exception as e:
-        logger.error(f"AI model error: {e}")
-        return "HOLD"
+
+        logger.error(
+            f"AI model error: {e}"
+        )
+
+        return {
+            "decision": "HOLD",
+            "confidence": 0,
+            "score": 0,
+            "reasons": []
+        }
