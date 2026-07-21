@@ -1,6 +1,7 @@
 """
 status_check.py — Telegram-a gələn mesajları yoxlayır. Kimsə botа "indi" yazsa,
-dərhal cari qiyməti, model ehtimalını və çoxlu zaman dilimi trendlərini göndərir.
+dərhal cari qiyməti, model ehtimalını, çoxlu zaman dilimi trendlərini və
+növbəti yüksək təsirli iqtisadi xəbərləri göndərir.
 
 Bu skript ayrıca bir GitHub Actions workflow-u vasitəsilə tez-tez (məs. hər 5 dəqiqədən
 bir) işə düşməlidir ki, gələn mesajları vaxtında görsün (tam "real-time" deyil,
@@ -15,6 +16,7 @@ telegram_offset.txt faylında saxlanılır və hər run-dan sonra commit edilmə
 import requests
 import os
 import market_utils
+import economic_calendar
 
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
@@ -67,17 +69,29 @@ def build_status_message():
     test_acc = status['test_acc']
     current_price = status['current_price']
     trend_up = status['trend_up']
+    pattern = status['pattern']
     trends_block = market_utils.format_trends_block(status['mtf_trends'])
 
     trend_text = "🟢 Yuxarı" if trend_up else "🔴 Aşağı"
+
+    news_block = economic_calendar.format_upcoming_high_impact(hours_ahead=24)
+
+    is_blackout, event_title, event_time = economic_calendar.check_news_blackout()
+    blackout_note = ""
+    if is_blackout:
+        event_time_str = event_time.strftime('%H:%M UTC') if event_time else "?"
+        blackout_note = f"\n⚠️ Hazırda xəbər sükutu aktivdir: {event_title} ({event_time_str})"
 
     msg = (
         f"📍 CARİ VƏZİYYƏT\n"
         f"Qiymət: {round(current_price, 5)}\n"
         f"Əsas trend (15dəq EMA20/50): {trend_text}\n"
         f"Modelin BUY ehtimalı: {prob:.0%}\n"
-        f"Model test dəqiqliyi: {test_acc:.0%}\n\n"
-        f"{trends_block}"
+        f"Model dəqiqliyi: {test_acc:.0%}\n"
+        f"Fiqur: {pattern}"
+        f"{blackout_note}\n\n"
+        f"{trends_block}\n\n"
+        f"{news_block}"
     )
     return msg
 
