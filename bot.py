@@ -4,6 +4,7 @@ import csv
 import json
 from datetime import datetime, timezone, timedelta
 import market_utils
+import economic_calendar
 
 LOG_FILE = "signals_log.csv"
 STATE_FILE = "daily_signal_state.json"
@@ -157,6 +158,16 @@ def run_bot():
 
     if test_acc < MIN_TEST_ACC:
         print(f"Model dəqiqliyi kifayət qədər deyil ({test_acc:.2%}), siqnal göndərilmir.")
+        return
+
+    # --- Fundamental analiz: yüksək təsirli xəbər sükutu ---
+    is_blackout, event_title, event_time = economic_calendar.check_news_blackout()
+    if is_blackout:
+        print(
+            f"Yüksək təsirli xəbər aşkarlandı: '{event_title}' "
+            f"({event_time.strftime('%H:%M UTC') if event_time else '?'}) — "
+            f"siqnal göndərilmir (xəbər sükutu aktivdir)."
+        )
         return
 
     # --- Gündəlik limit və cooldown yoxlaması ---
