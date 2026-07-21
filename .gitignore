@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+.vscode/
+.idea/
+signals_log.csv
+daily_signal_state.json
+telegram_offset.txt
