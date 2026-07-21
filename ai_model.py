@@ -8,7 +8,8 @@ def generate_signal(
         macd,
         signal,
         upper,
-        lower
+        lower,
+        adx
     ):
 
     try:
@@ -16,9 +17,10 @@ def generate_signal(
         score = 0
         reasons = []
 
-        total_points = 6
+        total_points = 7
 
 
+        # RSI
         if rsi < 30:
             score += 1
             reasons.append("RSI oversold BUY")
@@ -28,6 +30,7 @@ def generate_signal(
             reasons.append("RSI overbought SELL")
 
 
+        # EMA trend
         if price > ema:
             score += 1
             reasons.append("Price above EMA BUY")
@@ -37,6 +40,7 @@ def generate_signal(
             reasons.append("Price below EMA SELL")
 
 
+        # MACD
         if macd > signal:
             score += 1
             reasons.append("MACD bullish")
@@ -46,22 +50,30 @@ def generate_signal(
             reasons.append("MACD bearish")
 
 
+        # Bollinger
         if price <= lower:
             score += 1
-            reasons.append("Near lower Bollinger BUY")
+            reasons.append("Lower Bollinger BUY")
 
         elif price >= upper:
             score -= 1
-            reasons.append("Near upper Bollinger SELL")
+            reasons.append("Upper Bollinger SELL")
 
 
+        # ADX trend strength
+        if adx > 25:
+            score += 1
+            reasons.append("Strong trend ADX")
+
+
+        # Confidence
         confidence = abs(score) / total_points * 100
 
 
-        if score >= 2:
+        if score >= 3:
             decision = "BUY"
 
-        elif score <= -2:
+        elif score <= -3:
             decision = "SELL"
 
         else:
@@ -70,8 +82,9 @@ def generate_signal(
 
         result = {
             "decision": decision,
-            "confidence": round(confidence, 2),
+            "confidence": round(confidence,2),
             "score": score,
+            "adx": round(float(adx),2),
             "reasons": reasons
         }
 
@@ -88,8 +101,8 @@ def generate_signal(
         )
 
         return {
-            "decision": "HOLD",
-            "confidence": 0,
-            "score": 0,
-            "reasons": []
+            "decision":"HOLD",
+            "confidence":0,
+            "score":0,
+            "reasons":[]
         }

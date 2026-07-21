@@ -6,3 +6,4 @@ __pycache__/
 signals_log.csv
 daily_signal_state.json
 telegram_offset.txt
+forex_ai_bot.log
