@@ -7,7 +7,8 @@ from indicators import (
     calculate_ema,
     calculate_macd,
     calculate_bollinger,
-    calculate_adx
+    calculate_adx,
+    calculate_atr
 )
 
 from ai_model import generate_signal
@@ -33,29 +34,33 @@ def run_bot():
         return
 
 
-    price = data["close"].iloc[-1]
+
+    price = float(data["close"].iloc[-1])
 
 
-    rsi = calculate_rsi(data).iloc[-1]
+    rsi = float(calculate_rsi(data).iloc[-1])
 
-    ema = calculate_ema(data).iloc[-1]
+    ema = float(calculate_ema(data).iloc[-1])
 
 
     macd_data = calculate_macd(data)
 
-    macd = macd_data["macd"].iloc[-1]
+    macd = float(macd_data["macd"].iloc[-1])
 
-    signal = macd_data["signal"].iloc[-1]
+    signal = float(macd_data["signal"].iloc[-1])
 
 
     bollinger = calculate_bollinger(data)
 
-    upper = bollinger["upper"].iloc[-1]
+    upper = float(bollinger["upper"].iloc[-1])
 
-    lower = bollinger["lower"].iloc[-1]
+    lower = float(bollinger["lower"].iloc[-1])
 
 
-    adx = calculate_adx(data).iloc[-1]
+    adx = float(calculate_adx(data).iloc[-1])
+
+
+    atr = float(calculate_atr(data).iloc[-1])
 
 
     ai_result = generate_signal(
@@ -75,7 +80,8 @@ def run_bot():
 
     trade = calculate_trade_levels(
         price,
-        decision
+        decision,
+        atr
     )
 
 
@@ -87,16 +93,19 @@ def run_bot():
     print(f"MACD: {macd:.5f}")
     print(f"Signal: {signal:.5f}")
     print(f"ADX: {adx:.2f}")
+    print(f"ATR: {atr:.5f}")
 
     print("----------------------")
 
     print(f"AI Decision: {decision}")
     print(f"Confidence: {ai_result['confidence']}%")
 
+
     print("\nReasons:")
 
     for r in ai_result["reasons"]:
         print("-", r)
+
 
 
     if trade:
@@ -106,6 +115,7 @@ def run_bot():
         print(f"Stop Loss: {trade['stop_loss']}")
         print(f"Take Profit: {trade['take_profit']}")
         print(f"Risk Reward: {trade['risk_reward']}")
+
 
 
     print("----------------------")

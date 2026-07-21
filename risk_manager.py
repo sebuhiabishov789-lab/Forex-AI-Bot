@@ -4,7 +4,7 @@ from logger import logger
 def calculate_trade_levels(
         price,
         signal,
-        risk_percent=1,
+        atr,
         risk_reward=2
     ):
 
@@ -19,7 +19,7 @@ def calculate_trade_levels(
 
         if signal == "BUY":
 
-            stop_loss = price - (price * 0.005)
+            stop_loss = price - (atr * 1.5)
 
             take_profit = price + (
                 (price - stop_loss) * risk_reward
@@ -28,7 +28,7 @@ def calculate_trade_levels(
 
         elif signal == "SELL":
 
-            stop_loss = price + (price * 0.005)
+            stop_loss = price + (atr * 1.5)
 
             take_profit = price - (
                 (stop_loss - price) * risk_reward
@@ -50,7 +50,7 @@ def calculate_trade_levels(
 
 
         logger.info(
-            f"Trade levels created: {result}"
+            f"ATR Trade levels created: {result}"
         )
 
 
