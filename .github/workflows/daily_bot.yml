@@ -5,6 +5,8 @@ on:
   workflow_dispatch:
   repository_dispatch:
     types: [forex-bot-check]   # cron-job.org bunu tetikləyəcək
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,3 +23,10 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python bot.py
+      - name: Siqnal tarixçəsini və gündəlik limiti commit et
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git add signals_log.csv daily_signal_state.json 2>/dev/null || true
+          git commit -m "Update signal log and daily state" || echo "Dəyişiklik yoxdur"
+          git push
