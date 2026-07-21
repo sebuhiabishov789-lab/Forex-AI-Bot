@@ -1,16 +1,30 @@
 """
 market_utils.py — bot.py və status_check.py tərəfindən paylaşılan ortaq funksiyalar.
-Data yükləmə, indiqator hesablamaları, model öyrətmə, çoxlu zaman dilimi
-trend hesabatı, trend xətti (trendline), support/resistance və sadə
-həndəsi fiqur tanıma (double top/bottom, triangle) burada cəmlənib ki,
-kod təkrarlanmasın.
+Data yükləmə, indiqator hesablamaları, kalibrasiya olunmuş ensemble model
+(RandomForest + GradientBoosting), çoxlu zaman dilimi trend hesabatı, trend
+xətti (trendline), support/resistance və sadə həndəsi fiqur tanıma
+(double top/bottom, triangle) burada cəmlənib ki, kod təkrarlanmasın.
+
+--- Model arxitekturası ---
+Tək model əvəzinə İKİ fərqli model (RandomForest + GradientBoosting) paralel
+öyrədilir. Hər ikisinin "xam" ehtimalı ayrıca Platt scaling (logistic
+regression əsaslı kalibrasiya) ilə düzəldilir ki, "70% ehtimal" dediyimiz
+zaman bu, statistik olaraq daha etibarlı olsun. Sonra iki kalibrə olunmuş
+ehtimalın ortalaması götürülür (ensemble) — fərqli modellər fərqli səhvlər
+etdiyi üçün ortalama daha stabildir.
+
+Data xronoloji olaraq 3 hissəyə bölünür (sızma/leakage olmasın deyə):
+  - train (70%)  → əsas modellər (RF, GB) bu hissədə öyrədilir
+  - calib (15%)  → kalibratorlar (Platt scaling) bu hissədə öyrədilir
+  - test  (15%)  → yekun dəqiqlik (test_acc) bu hissədə ölçülür
 """
 
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
 
 FEATURES = [
     'Return', 'Range', 'RSI', 'MACD_hist', 'Trend_up',
@@ -236,10 +250,13 @@ def build_features(data):
     return data
 
 
-def build_model():
-    """Balanslaşdırılmış, overfitting-ə qarşı tənzimlənmiş RandomForest modeli qurur."""
+# ---------------------------------------------------------------------------
+# Kalibrasiya olunmuş ensemble model
+# ---------------------------------------------------------------------------
+
+def build_rf():
     return RandomForestClassifier(
-        n_estimators=300,
+        n_estimators=250,
         max_depth=6,
         min_samples_leaf=10,
         class_weight='balanced',
@@ -247,21 +264,98 @@ def build_model():
     )
 
 
-def evaluate_model_accuracy(hist):
+def build_gb():
+    return GradientBoostingClassifier(
+        n_estimators=150,
+        max_depth=3,
+        learning_rate=0.05,
+        random_state=42,
+    )
+
+
+def fit_platt_calibrator(raw_probs, y_true):
+    """Xam ehtimalları real ehtimala yaxınlaşdırmaq üçün logistic regression (Platt scaling) öyrədir."""
+    lr = LogisticRegression()
+    lr.fit(raw_probs.reshape(-1, 1), y_true)
+    return lr
+
+
+def apply_calibrator(calibrator, raw_prob):
+    return float(calibrator.predict_proba(np.array([[raw_prob]]))[0][1])
+
+
+def train_calibrated_ensemble(hist):
     """
-    TimeSeriesSplit ilə modelin dəqiqliyini bir neçə ardıcıl bölmə üzərində
-    qiymətləndirir (tək bir train/test bölməsinə nisbətən daha etibarlı ölçüdür).
+    Datanı xronoloji olaraq train/calib/test hissələrinə bölür, hər iki modeli
+    (RF, GB) train hissəsində öyrədir, kalibratorları calib hissəsində qurur,
+    test hissəsində yekun (kalibrə olunmuş, ensemble) dəqiqliyi ölçür.
+
+    Qaytarır: dict — rf, gb, calibrator_rf, calibrator_gb, test_acc
     """
-    tscv = TimeSeriesSplit(n_splits=5)
-    model = build_model()
-    scores = cross_val_score(model, hist[FEATURES], hist['Target'], cv=tscv, scoring='accuracy')
-    return float(scores.mean())
+    n = len(hist)
+    train_end = int(n * 0.70)
+    calib_end = int(n * 0.85)
+
+    train = hist.iloc[:train_end]
+    calib = hist.iloc[train_end:calib_end]
+    test = hist.iloc[calib_end:]
+
+    rf = build_rf()
+    gb = build_gb()
+    rf.fit(train[FEATURES], train['Target'])
+    gb.fit(train[FEATURES], train['Target'])
+
+    raw_rf_calib = rf.predict_proba(calib[FEATURES])[:, 1]
+    raw_gb_calib = gb.predict_proba(calib[FEATURES])[:, 1]
+    calibrator_rf = fit_platt_calibrator(raw_rf_calib, calib['Target'].values)
+    calibrator_gb = fit_platt_calibrator(raw_gb_calib, calib['Target'].values)
+
+    # Yekun dəqiqliyi test hissəsində ölç (həm RF, həm GB kalibrə olunub, ortalanır)
+    raw_rf_test = rf.predict_proba(test[FEATURES])[:, 1]
+    raw_gb_test = gb.predict_proba(test[FEATURES])[:, 1]
+    cal_rf_test = calibrator_rf.predict_proba(raw_rf_test.reshape(-1, 1))[:, 1]
+    cal_gb_test = calibrator_gb.predict_proba(raw_gb_test.reshape(-1, 1))[:, 1]
+    ensemble_test = (cal_rf_test + cal_gb_test) / 2
+    preds = (ensemble_test > 0.5).astype(int)
+    test_acc = float(accuracy_score(test['Target'], preds))
+
+    return {
+        'rf': rf,
+        'gb': gb,
+        'calibrator_rf': calibrator_rf,
+        'calibrator_gb': calibrator_gb,
+        'test_acc': test_acc,
+    }
+
+
+def predict_ensemble(models, live_row):
+    """
+    Canlı sətir üçün hər iki modelin kalibrə olunmuş ehtimalını hesablayır,
+    ortalamanı (ensemble ehtimalı) və modellərin razılaşma dərəcəsini qaytarır.
+    """
+    raw_rf = models['rf'].predict_proba(live_row)[0][1]
+    raw_gb = models['gb'].predict_proba(live_row)[0][1]
+    cal_rf = apply_calibrator(models['calibrator_rf'], raw_rf)
+    cal_gb = apply_calibrator(models['calibrator_gb'], raw_gb)
+    ensemble_prob = (cal_rf + cal_gb) / 2
+
+    # Modellərin nə qədər razılaşdığı: hər ikisi eyni istiqamətə (0.5-dən eyni tərəfə) işarə edirmi?
+    same_direction = (cal_rf > 0.5) == (cal_gb > 0.5)
+    agreement = 1.0 if same_direction else 0.0
+
+    return {
+        'prob': ensemble_prob,
+        'rf_prob': cal_rf,
+        'gb_prob': cal_gb,
+        'model_agreement': agreement,
+    }
 
 
 def get_current_status():
     """
-    Tam status hesablamasını edir: data yükləmə, feature-lar, model öyrətmə,
-    canlı proqnoz, çoxlu zaman dilimi trendlər, support/resistance və fiqur.
+    Tam status hesablamasını edir: data yükləmə, feature-lar, kalibrasiya
+    olunmuş ensemble model öyrətmə, canlı proqnoz, çoxlu zaman dilimi
+    trendlər, support/resistance və fiqur.
 
     Qaytarır: dict və ya None (data kifayət deyilsə).
     """
@@ -270,19 +364,17 @@ def get_current_status():
         return None
 
     data = build_features(raw)
-    if len(data) < 150:
+    if len(data) < 200:
         return None
 
     live_row = data[FEATURES].iloc[[-1]]
     hist = data.iloc[:-1]
 
-    # Daha etibarlı dəqiqlik ölçüsü: TimeSeriesSplit üzrə orta dəqiqlik
-    test_acc = evaluate_model_accuracy(hist)
+    models = train_calibrated_ensemble(hist)
+    prediction = predict_ensemble(models, live_row)
 
-    # Canlı proqnoz üçün bütün tarixi data üzərində sonuncu dəfə öyrədilir
-    final_model = build_model()
-    final_model.fit(hist[FEATURES], hist['Target'])
-    prob = final_model.predict_proba(live_row)[0][1]
+    prob = prediction['prob']
+    test_acc = models['test_acc']
 
     current_price = data['Close'].iloc[-1].item()
     current_atr = data['ATR'].iloc[-1].item()
@@ -298,6 +390,9 @@ def get_current_status():
     return {
         'data': data,
         'prob': prob,
+        'rf_prob': prediction['rf_prob'],
+        'gb_prob': prediction['gb_prob'],
+        'model_agreement': prediction['model_agreement'],
         'test_acc': test_acc,
         'current_price': current_price,
         'current_atr': current_atr,
