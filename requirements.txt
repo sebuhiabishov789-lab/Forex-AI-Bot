@@ -3,3 +3,8 @@ yfinance
 pandas
 scikit-learn
 requests
+
+python-dotenv
+ta
+python-telegram-bot
+schedule
