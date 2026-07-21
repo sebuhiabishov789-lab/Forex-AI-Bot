@@ -10,10 +10,12 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.model_selection import TimeSeriesSplit, cross_val_score
 
-FEATURES = ['Return', 'Range', 'RSI', 'MACD_hist', 'Trend_up', 'Trend_slope', 'Dist_to_trendline']
+FEATURES = [
+    'Return', 'Range', 'RSI', 'MACD_hist', 'Trend_up',
+    'Trend_slope', 'Dist_to_trendline', 'Body_ratio',
+]
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +89,12 @@ def format_trends_block(trends):
     for label, value in trends.items():
         lines.append(f"  {label}: {value}")
     return "\n".join(lines)
+
+
+def count_aligned_timeframes(trends, direction_up):
+    """Neçə zaman diliminin BUY (yuxarı) və ya SELL (aşağı) istiqaməti ilə üst-üstə düşdüyünü sayır."""
+    target = "🟢 Yuxarı" if direction_up else "🔴 Aşağı"
+    return sum(1 for v in trends.values() if v == target)
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +216,10 @@ def build_features(data):
     data['Trend_up'] = (data['EMA_fast'] > data['EMA_slow']).astype(int)
     data['ATR'] = compute_atr(data)
 
+    # Şam gövdəsinin range-ə nisbəti — güclü/zəif hərəkəti ayırd edir
+    candle_range = (data['High'] - data['Low']).replace(0, np.nan)
+    data['Body_ratio'] = ((data['Close'] - data['Open']).abs() / candle_range).fillna(0)
+
     # --- Trend xətti (trendline) əsaslı feature-lar ---
     ph, _pl = find_pivots(data, window=5)
     slope, trendline_val = compute_trendline(data, ph, lookback=50)
@@ -224,6 +236,28 @@ def build_features(data):
     return data
 
 
+def build_model():
+    """Balanslaşdırılmış, overfitting-ə qarşı tənzimlənmiş RandomForest modeli qurur."""
+    return RandomForestClassifier(
+        n_estimators=300,
+        max_depth=6,
+        min_samples_leaf=10,
+        class_weight='balanced',
+        random_state=42,
+    )
+
+
+def evaluate_model_accuracy(hist):
+    """
+    TimeSeriesSplit ilə modelin dəqiqliyini bir neçə ardıcıl bölmə üzərində
+    qiymətləndirir (tək bir train/test bölməsinə nisbətən daha etibarlı ölçüdür).
+    """
+    tscv = TimeSeriesSplit(n_splits=5)
+    model = build_model()
+    scores = cross_val_score(model, hist[FEATURES], hist['Target'], cv=tscv, scoring='accuracy')
+    return float(scores.mean())
+
+
 def get_current_status():
     """
     Tam status hesablamasını edir: data yükləmə, feature-lar, model öyrətmə,
@@ -236,29 +270,30 @@ def get_current_status():
         return None
 
     data = build_features(raw)
-    if len(data) < 100:
+    if len(data) < 150:
         return None
 
     live_row = data[FEATURES].iloc[[-1]]
     hist = data.iloc[:-1]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        hist[FEATURES], hist['Target'], test_size=0.2, shuffle=False
-    )
+    # Daha etibarlı dəqiqlik ölçüsü: TimeSeriesSplit üzrə orta dəqiqlik
+    test_acc = evaluate_model_accuracy(hist)
 
-    model = RandomForestClassifier(n_estimators=200, max_depth=5, random_state=42)
-    model.fit(X_train, y_train)
-
-    test_acc = accuracy_score(y_test, model.predict(X_test))
-    prob = model.predict_proba(live_row)[0][1]
+    # Canlı proqnoz üçün bütün tarixi data üzərində sonuncu dəfə öyrədilir
+    final_model = build_model()
+    final_model.fit(hist[FEATURES], hist['Target'])
+    prob = final_model.predict_proba(live_row)[0][1]
 
     current_price = data['Close'].iloc[-1].item()
     current_atr = data['ATR'].iloc[-1].item()
     trend_up = bool(data['Trend_up'].iloc[-1])
+    trend_slope = float(data['Trend_slope'].iloc[-1])
 
     mtf_trends = get_multi_timeframe_trends(data)
     support, resistance = detect_support_resistance(data)
     pattern = detect_pattern(data)
+    aligned_tf_up = count_aligned_timeframes(mtf_trends, direction_up=True)
+    aligned_tf_down = count_aligned_timeframes(mtf_trends, direction_up=False)
 
     return {
         'data': data,
@@ -267,7 +302,10 @@ def get_current_status():
         'current_price': current_price,
         'current_atr': current_atr,
         'trend_up': trend_up,
+        'trend_slope': trend_slope,
         'mtf_trends': mtf_trends,
+        'aligned_tf_up': aligned_tf_up,
+        'aligned_tf_down': aligned_tf_down,
         'support': support,
         'resistance': resistance,
         'pattern': pattern,
