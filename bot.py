@@ -61,10 +61,11 @@ def log_signal(direction, entry, sl, tp, prob, test_acc, confidence):
         ])
 
 
-def compute_confidence(prob, test_acc, tech_reasons_count, aligned_timeframes):
+def compute_confidence(prob, test_acc, tech_reasons_count, aligned_timeframes, model_agreement=1.0):
     """
-    ML ehtimalı, model dəqiqliyi, texniki təsdiq sayı və üst-üstə düşən
-    zaman dilimi trendlərini birləşdirib 0-1 aralığında əminlik skoru verir.
+    ML ehtimalı, model dəqiqliyi, texniki təsdiq sayı, üst-üstə düşən zaman
+    dilimi trendləri və iki modelin (RF+GB) razılaşma dərəcəsini birləşdirib
+    0-1 aralığında əminlik skoru verir.
     """
     direction_strength = abs(prob - 0.5) * 2  # 0..1, 0.5-dən nə qədər uzaqdır
     tech_score = min(tech_reasons_count / 3, 1.0)  # 0..1
@@ -72,10 +73,11 @@ def compute_confidence(prob, test_acc, tech_reasons_count, aligned_timeframes):
     tf_score = min(aligned_timeframes / 5, 1.0)  # 0..1, neçə TF eyni istiqamətdədir
 
     confidence = (
-        0.40 * direction_strength +
-        0.25 * tech_score +
+        0.35 * direction_strength +
+        0.20 * tech_score +
         0.15 * acc_score +
-        0.20 * tf_score
+        0.15 * tf_score +
+        0.15 * model_agreement
     )
     return round(confidence, 4)
 
@@ -152,6 +154,7 @@ def run_bot():
     pattern = status['pattern']
     aligned_tf_up = status['aligned_tf_up']
     aligned_tf_down = status['aligned_tf_down']
+    model_agreement = status['model_agreement']
     trends_block = market_utils.format_trends_block(status['mtf_trends'])
 
     print(f"Model dəqiqliyi (TimeSeriesSplit): {test_acc:.2%}")
@@ -190,7 +193,7 @@ def run_bot():
         if REQUIRE_TECHNICAL_CONFIRMATION and not tech_reasons:
             print("ML BUY siqnalı var, amma texniki təsdiq yoxdur — siqnal ötürüldü.")
         else:
-            confidence = compute_confidence(prob, test_acc, len(tech_reasons), aligned_tf_up)
+            confidence = compute_confidence(prob, test_acc, len(tech_reasons), aligned_tf_up, model_agreement)
 
             if confidence < MIN_CONFIDENCE:
                 print(f"BUY namizədi var, amma əminlik kifayət deyil ({confidence:.2f} < {MIN_CONFIDENCE}), göndərilmir.")
@@ -207,7 +210,8 @@ def run_bot():
                     f"Qiymət: {round(current_price, 5)}\n"
                     f"SL: {round(sl, 5)}\n"
                     f"TP: {round(tp, 5)}\n"
-                    f"Ehtimal: {prob:.0%} | Model dəqiqliyi: {test_acc:.0%}\n"
+                    f"Ehtimal (ensemble): {prob:.0%} | Model dəqiqliyi: {test_acc:.0%}\n"
+                    f"  ↳ RandomForest: {status['rf_prob']:.0%} | GradientBoosting: {status['gb_prob']:.0%}\n"
                     f"Əminlik skoru: {confidence:.0%}\n"
                     f"Fiqur: {pattern}\n"
                     f"{confidence_note}\n"
@@ -226,7 +230,7 @@ def run_bot():
         if REQUIRE_TECHNICAL_CONFIRMATION and not tech_reasons:
             print("ML SELL siqnalı var, amma texniki təsdiq yoxdur — siqnal ötürüldü.")
         else:
-            confidence = compute_confidence(1 - prob, test_acc, len(tech_reasons), aligned_tf_down)
+            confidence = compute_confidence(1 - prob, test_acc, len(tech_reasons), aligned_tf_down, model_agreement)
 
             if confidence < MIN_CONFIDENCE:
                 print(f"SELL namizədi var, amma əminlik kifayət deyil ({confidence:.2f} < {MIN_CONFIDENCE}), göndərilmir.")
@@ -243,7 +247,8 @@ def run_bot():
                     f"Qiymət: {round(current_price, 5)}\n"
                     f"SL: {round(sl, 5)}\n"
                     f"TP: {round(tp, 5)}\n"
-                    f"Ehtimal: {1 - prob:.0%} | Model dəqiqliyi: {test_acc:.0%}\n"
+                    f"Ehtimal (ensemble): {1 - prob:.0%} | Model dəqiqliyi: {test_acc:.0%}\n"
+                    f"  ↳ RandomForest: {1 - status['rf_prob']:.0%} | GradientBoosting: {1 - status['gb_prob']:.0%}\n"
                     f"Əminlik skoru: {confidence:.0%}\n"
                     f"Fiqur: {pattern}\n"
                     f"{confidence_note}\n"
