@@ -1,55 +1,24 @@
-name: Forex AI Bot
-
-on:
-  schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch:
-  repository_dispatch:
-    types: [forex-bot-check]
-
-permissions:
-  contents: write
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Repo-nu çıxar
-        uses: actions/checkout@v4
-
-      - name: Python qurulması
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Kitabxanaları yüklə
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Telegram statusunu yoxla (status_check.py)
+- name: Dəyişiklikləri commit et və push et
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python status_check.py
-
-      - name: Botu çalışdır (bot.py)
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python bot.py
-
-      - name: Dəyişiklikləri commit et və push et
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           
-          # Dəyişiklikləri yoxla (fayllardan biri belə dəyişibsə davam et)
+          # Remot-u token ilə yeniləyirik (təsdiq kodu istəməsin deyə)
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          
+          # Faylları bir-bir yoxla və varsa əlavə et
+          for file in signals_log.csv daily_signal_state.json telegram_offset.txt; do
+            if [ -f "$file" ]; then
+              git add "$file"
+            fi
+          done
+
+          # Əgər əlavə ediləcək bir şey varsa commit et
           if [[ -n $(git status --porcelain) ]]; then
-            git pull --rebase origin main
-            git add signals_log.csv daily_signal_state.json telegram_offset.txt
             git commit -m "Update signal logs, state, and offset"
             git push origin main
           else
-            echo "Heç bir dəyişiklik yoxdur."
+            echo "Heç bir yeni dəyişiklik yoxdur."
           fi
