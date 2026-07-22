@@ -5,17 +5,17 @@
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           
-          # Remot-u token ilə yeniləyirik (təsdiq kodu istəməsin deyə)
+          # Remot-u token ilə yeniləyirik
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           
-          # Faylları bir-bir yoxla və varsa əlavə et
+          # Faylları yoxla və əlavə et
           for file in signals_log.csv daily_signal_state.json telegram_offset.txt; do
             if [ -f "$file" ]; then
               git add "$file"
             fi
           done
-
-          # Əgər əlavə ediləcək bir şey varsa commit et
+          
+          # Dəyişiklik varsa commit et və push et
           if [[ -n $(git status --porcelain) ]]; then
             git commit -m "Update signal logs, state, and offset"
             git push origin main
