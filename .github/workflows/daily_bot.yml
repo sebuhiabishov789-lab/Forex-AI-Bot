@@ -1,7 +1,7 @@
 name: Forex AI Bot
 on:
   schedule:
-    - cron: '*/20 * * * *'   # ehtiyat (backup) — cron-job.org işləməsə belə tam dayanmasın
+    - cron: '*/5 * * * *'   # ehtiyat (backup) — cron-job.org işləməsə belə tam dayanmasın
   workflow_dispatch:
   repository_dispatch:
     types: [forex-bot-check]   # cron-job.org bunu tetikləyəcək
