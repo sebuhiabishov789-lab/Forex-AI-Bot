@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Kitabxanaları yüklə
-        run: pip install pandas yfinance scikit-learn requests
+        run: pip install -r requirements.txt
       - name: Botu çalışdır
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
