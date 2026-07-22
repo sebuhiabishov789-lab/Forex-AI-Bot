@@ -1,10 +1,10 @@
 name: Forex AI Bot
 on:
   schedule:
-    - cron: '*/5 * * * *'   # ehtiyat (backup) — cron-job.org işləməsə belə tam dayanmasın
+    - cron: '*/5 * * * *'
   workflow_dispatch:
   repository_dispatch:
-    types: [forex-bot-check]   # cron-job.org bunu tetikləyəcək
+    types: [forex-bot-check]
 permissions:
   contents: write
 jobs:
@@ -27,6 +27,8 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
+          # Remote dəyişiklikləri çəkir, toqquşmanın qarşısını alır
+          git pull --rebase origin main
           git add signals_log.csv daily_signal_state.json 2>/dev/null || true
           git commit -m "Update signal log and daily state" || echo "Dəyişiklik yoxdur"
-          git push
+          git push origin main
