@@ -86,14 +86,12 @@ def calculate_atr(data, period=14):
 
     return atr_indicator.average_true_range()
 
+def calculate_ema200(data):
 
-def calculate_support_resistance(data, lookback=20):
+    ema_indicator = ta.trend.EMAIndicator(
+        close=data["close"],
+        window=200
+    )
 
-    support = data["Low"].rolling(lookback).min()
+    return ema_indicator.ema_indicator()
 
-    resistance = data["High"].rolling(lookback).max()
-
-    return {
-        "support": support,
-        "resistance": resistance
-    }

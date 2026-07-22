@@ -65,10 +65,10 @@ def generate_signal(
         max_score = 18
         confidence = abs(score) / max_score * 100
 
-        if score >= 8 and confidence >= 60:
+        if score >= 6:
             decision = "BUY"
 
-        elif score <= -8 and confidence >= 60:
+        elif score <= -6:
             decision = "SELL"
 
         else:

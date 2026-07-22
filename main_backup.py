@@ -1,4 +1,4 @@
-from risk_manager import calculate_trade_levels
+﻿from risk_manager import calculate_trade_levels
 
 from market_data import get_market_data
 
@@ -9,14 +9,14 @@ from indicators import (
     calculate_macd,
     calculate_bollinger,
     calculate_adx,
-    calculate_atr,
-    calculate_support_resistance
+    calculate_atr
 )
 
 from ai_model import generate_signal
 
 from logger import logger
 from messages import create_message
+from notifications import send_telegram
 
 
 
@@ -67,38 +67,28 @@ def run_bot():
 
     atr = float(calculate_atr(data).iloc[-1])
 
-    sr = calculate_support_resistance(data)
-
-    support = float(sr["support"].iloc[-1])
-
-    resistance = float(sr["resistance"].iloc[-1])
-
 
     ai_result = generate_signal(
         rsi,
         ema,
-        ema200,
         price,
         macd,
         signal,
         upper,
         lower,
-        adx,
-        support,
-        resistance
+        adx
     )
+
 
     decision = ai_result["decision"]
 
     confidence = ai_result["confidence"]
 
     # Confidence filter
-    if confidence < 60:
+    if confidence < 40:
         decision = "HOLD"
-    
-    # ADX trend filter
-    if adx < 25:
-        decision = "HOLD"
+
+
 
         trade = calculate_trade_levels(
             price,
@@ -109,6 +99,7 @@ def run_bot():
         trade = None
 
 
+    print("----------------------")
     print(f"Symbol: {symbol}")
     print(f"Price: {price:.5f}")
     print(f"RSI: {rsi:.2f}")
@@ -118,9 +109,8 @@ def run_bot():
     print(f"Signal: {signal:.5f}")
     print(f"ADX: {adx:.2f}")
     print(f"ATR: {atr:.5f}")
-    print(f"Support: {support:.5f}")
-    print(f"Resistance: {resistance:.5f}")
 
+    print("----------------------")
 
     message = create_message(
         symbol,
@@ -131,13 +121,26 @@ def run_bot():
         trade
     )
 
-
-
     print(message)
 
+    if decision in ["BUY", "SELL"]:
+        send_telegram(message)
 
-    return message
+
+
+
+
+
+
+
+
+
+
+
+    print("----------------------")
+
 
 
 if __name__ == "__main__":
     run_bot()
+

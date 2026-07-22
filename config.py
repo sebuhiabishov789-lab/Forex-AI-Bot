@@ -1,3 +1,6 @@
+﻿TELEGRAM_TOKEN = "8616626946:AAEePfXRj_1kxshM1Mh91PEVbtZDGdpSJ_8"
+TELEGRAM_CHAT_ID = "8039332195"
+
 LOG_FILE = "signals_log.csv"
 STATE_FILE = "daily_signal_state.json"
 

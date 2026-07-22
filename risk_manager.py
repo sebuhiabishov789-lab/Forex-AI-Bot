@@ -1,66 +1,63 @@
-from logger import logger
+﻿from logger import logger
 
 
 def calculate_trade_levels(
-        price,
-        signal,
-        atr,
-        risk_reward=2
-    ):
+    price,
+    signal,
+    atr,
+    risk_multiplier=1.5,
+    tp1_multiplier=2,
+    tp2_multiplier=3
+):
 
     try:
 
-        result = {
-            "signal": signal,
-            "entry": round(price,5),
-            "risk_reward": f"1:{risk_reward}"
-        }
+        if atr <= 0:
+            return None
 
+        risk = atr * risk_multiplier
 
         if signal == "BUY":
 
-            stop_loss = price - (atr * 1.5)
+            entry = price
+            stop_loss = entry - risk
 
-            take_profit = price + (
-                (price - stop_loss) * risk_reward
-            )
-
+            tp1 = entry + atr * tp1_multiplier
+            tp2 = entry + atr * tp2_multiplier
 
         elif signal == "SELL":
 
-            stop_loss = price + (atr * 1.5)
+            entry = price
+            stop_loss = entry + risk
 
-            take_profit = price - (
-                (stop_loss - price) * risk_reward
-            )
-
+            tp1 = entry - atr * tp1_multiplier
+            tp2 = entry - atr * tp2_multiplier
 
         else:
 
-            result["stop_loss"] = None
-            result["take_profit"] = None
+            return None
 
-            return result
+        reward = abs(tp2 - entry)
+        risk_size = abs(entry - stop_loss)
 
+        rr = round(reward / risk_size, 2)
 
+        result = {
+            "signal": signal,
+            "entry": round(entry, 5),
+            "stop_loss": round(stop_loss, 5),
+            "take_profit_1": round(tp1, 5),
+            "take_profit_2": round(tp2, 5),
+            "risk_reward": f"1:{rr}",
+            "atr": round(atr, 5)
+        }
 
-        result["stop_loss"] = round(stop_loss,5)
-
-        result["take_profit"] = round(take_profit,5)
-
-
-        logger.info(
-            f"ATR Trade levels created: {result}"
-        )
-
+        logger.info(f"Trade plan created: {result}")
 
         return result
 
-
     except Exception as e:
 
-        logger.error(
-            f"Risk manager error: {e}"
-        )
+        logger.exception(e)
 
         return None

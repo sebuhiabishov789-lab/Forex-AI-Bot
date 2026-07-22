@@ -17,6 +17,7 @@ from ai_model import generate_signal
 
 from logger import logger
 from messages import create_message
+from notifications import send_telegram
 
 
 
@@ -65,13 +66,8 @@ def run_bot():
     adx = float(calculate_adx(data).iloc[-1])
 
 
-    atr = float(calculate_atr(data).iloc[-1])
-
-    sr = calculate_support_resistance(data)
-
-    support = float(sr["support"].iloc[-1])
-
-    resistance = float(sr["resistance"].iloc[-1])
+    atr = float(calculate_atr,
+    calculate_support_resistance(data).iloc[-1])
 
 
     ai_result = generate_signal(
@@ -83,9 +79,7 @@ def run_bot():
         signal,
         upper,
         lower,
-        adx,
-        support,
-        resistance
+        adx
     )
 
     decision = ai_result["decision"]
@@ -93,12 +87,10 @@ def run_bot():
     confidence = ai_result["confidence"]
 
     # Confidence filter
-    if confidence < 60:
+    if confidence < 40:
         decision = "HOLD"
-    
-    # ADX trend filter
-    if adx < 25:
-        decision = "HOLD"
+
+
 
         trade = calculate_trade_levels(
             price,
@@ -109,6 +101,7 @@ def run_bot():
         trade = None
 
 
+    print("----------------------")
     print(f"Symbol: {symbol}")
     print(f"Price: {price:.5f}")
     print(f"RSI: {rsi:.2f}")
@@ -118,9 +111,8 @@ def run_bot():
     print(f"Signal: {signal:.5f}")
     print(f"ADX: {adx:.2f}")
     print(f"ATR: {atr:.5f}")
-    print(f"Support: {support:.5f}")
-    print(f"Resistance: {resistance:.5f}")
 
+    print("----------------------")
 
     message = create_message(
         symbol,
@@ -131,13 +123,26 @@ def run_bot():
         trade
     )
 
-
-
     print(message)
 
+    if decision in ["BUY", "SELL"]:
+        send_telegram(message)
 
-    return message
+
+
+
+
+
+
+
+
+
+
+
+    print("----------------------")
+
 
 
 if __name__ == "__main__":
     run_bot()
+

@@ -1,0 +1,16 @@
+    # Confidence filter
+    if confidence < 60:
+        decision = "HOLD"
+
+    # ADX trend filter
+    if adx < 25:
+        decision = "HOLD"
+
+    if decision in ["BUY", "SELL"]:
+        trade = calculate_trade_levels(
+            price,
+            decision,
+            atr
+        )
+    else:
+        trade = None
