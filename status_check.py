@@ -1,7 +1,8 @@
 """
 status_check.py — Telegram-a gələn mesajları yoxlayır. Kimsə bota "indi" yazsa,
 dərhal cari qiyməti, model ehtimalını, çoxlu zaman dilimi trendlərini,
-texniki göstəriciləri, son siqnal performansını və növbəti yüksək təsirli
+texniki göstəriciləri (ATR, RSI, MACD, support/resistance),
+model razılaşmasını, son siqnal performansını və növbəti yüksək təsirli
 iqtisadi xəbərləri göndərir.
 
 Bu skript ayrıca bir GitHub Actions workflow-u vasitəsilə tez-tez (məs. hər 5 dəqiqədən
@@ -113,26 +114,48 @@ def build_status_message():
     if status is None:
         return "⚠️ Hazırda kifayət qədər bazar datası yoxdur, bir az sonra yenidən cəhd edin."
 
+    # Əsas məlumatlar
     prob = status['prob']
     test_acc = status['test_acc']
     current_price = status['current_price']
-    current_atr = status.get('current_atr', None)
+    current_atr = status['current_atr']
     trend_up = status['trend_up']
-    trend_slope = status.get('trend_slope', 0)
-    pattern = status.get('pattern', 'Naməlum')
-    support = status.get('support', None)
-    resistance = status.get('resistance', None)
-    rf_prob = status.get('rf_prob', None)
-    gb_prob = status.get('gb_prob', None)
-    model_agreement = status.get('model_agreement', None)
-    aligned_tf_up = status.get('aligned_tf_up', 0)
-    aligned_tf_down = status.get('aligned_tf_down', 0)
+    trend_slope = status['trend_slope']
+    pattern = status['pattern']
+    support = status['support']
+    resistance = status['resistance']
+    rf_prob = status['rf_prob']
+    gb_prob = status['gb_prob']
+    model_agreement = status['model_agreement']
+    aligned_tf_up = status['aligned_tf_up']
+    aligned_tf_down = status['aligned_tf_down']
 
     trends_block = market_utils.format_trends_block(status['mtf_trends'])
 
     session = get_market_session()
-    trend_emoji = "🟢" if trend_up else "🔴"
-    trend_text = "Yuxarı" if trend_up else "Aşağı"
+
+    # Trend əmsalı detalı
+    if trend_slope > 0.0001:
+        slope_desc = "kəskin yuxarı ⬆️"
+    elif trend_slope > 0:
+        slope_desc = "zəif yuxarı ↗️"
+    elif trend_slope < -0.0001:
+        slope_desc = "kəskin aşağı ⬇️"
+    elif trend_slope < 0:
+        slope_desc = "zəif aşağı ↘️"
+    else:
+        slope_desc = "üfüqi ➖"
+
+    # Model razılaşma detalı
+    if model_agreement == 1.0:
+        agreement_text = "✅ Hər iki model razı"
+    else:
+        rf_dir = "BUY" if rf_prob > 0.5 else "SELL"
+        gb_dir = "BUY" if gb_prob > 0.5 else "SELL"
+        agreement_text = f"⚠️ Fərqli: RF={rf_dir}, GB={gb_dir}"
+
+    # Uyğunlaşan TF sayları
+    tf_alignment_text = f"📈 BUY: {aligned_tf_up}/5 TF  |  📉 SELL: {aligned_tf_down}/5 TF"
 
     # Xəbər bloku
     news_block = economic_calendar.format_upcoming_high_impact(hours_ahead=24)
@@ -140,52 +163,40 @@ def build_status_message():
     blackout_note = ""
     if is_blackout:
         event_time_str = event_time.strftime('%H:%M UTC') if event_time else "?"
-        blackout_note = f"⚠️ Xəbər sükutu: {event_title} ({event_time_str})"
+        blackout_note = f"⚠️ XƏBƏR SÜKUTU: {event_title} ({event_time_str})"
 
     # Son performans
     perf = get_recent_performance()
-    perf_block = f"\n📈 Performans: {perf}" if perf else ""
+    perf_block = f"📊 Performans: {perf}\n" if perf else ""
 
-    # Model detalı
-    model_detail = ""
-    if rf_prob is not None and gb_prob is not None:
-        model_detail = (
-            f"🔹 RF: {rf_prob:.0%}  |  GB: {gb_prob:.0%}"
-        )
-        if model_agreement is not None:
-            model_detail += f"  |  Razılaşma: {model_agreement:.0%}"
-
-    # Support / Resistance
+    # Support/Resistance bloku
     sr_block = ""
-    if support is not None or resistance is not None:
-        sr_block = "🔸 "
-        if support is not None:
-            sr_block += f"Dəstək: {support:.5f}  "
-        if resistance is not None:
-            sr_block += f"Direnc: {resistance:.5f}"
+    if support is not None:
+        sr_block += f"🟢 Dəstək: {support:.5f}\n"
+    if resistance is not None:
+        sr_block += f"🔴 Direnc: {resistance:.5f}\n"
 
-    # Trend əmsalı
-    trend_strength_line = ""
-    if trend_slope:
-        direction = "yuxarı" if trend_slope > 0 else "aşağı"
-        trend_strength_line = f"Trend meyl əmsalı: {trend_slope:.5f} ({direction})"
-
-    # ATR
-    atr_line = f"ATR (15m): {current_atr:.5f}" if current_atr else ""
-
+    # Ana mesaj
     msg = (
-        f"📊 *Bazar Statusu*\n"
+        f"📍 *Bazar Statusu*\n"
         f"⏰ {datetime.now(timezone.utc).strftime('%H:%M UTC')}  |  {session}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
         f"💵 Qiymət: {current_price:.5f}\n"
-        f"{atr_line}\n"
-        f"{sr_block}\n"
-        f"{trend_emoji} Trend: {trend_text}  |  {trend_strength_line}\n"
-        f"🔮 Modelin BUY ehtimalı: {prob:.0%}  |  Dəqiqlik: {test_acc:.0%}\n"
-        f"{model_detail}\n"
+        f"📏 ATR (15m): {current_atr:.5f}\n"
+        f"{sr_block}"
+        f"🔹 Trend: {'🟢 UP' if trend_up else '🔴 DOWN'} (meyl: {slope_desc})\n"
+        f"🔹 Trend əmsalı: {trend_slope:.6f}\n"
         f"📐 Fiqur: {pattern}\n"
-        f"{blackout_note}{perf_block}\n\n"
-        f"📋 *Çoxzamanlı Trendlər:*\n{trends_block}\n\n"
-        f"📰 *İqtisadi Təqvim (24 saat):*\n{news_block}"
+        f"\n🧠 *Model Proqnozu*\n"
+        f"🎯 RF: {rf_prob:.1%}  |  GB: {gb_prob:.1%}\n"
+        f"🔮 Ensemble: {prob:.1%}  |  Dəqiqlik: {test_acc:.1%}\n"
+        f"🤝 Razılaşma: {agreement_text}\n"
+        f"{tf_alignment_text}\n"
+        f"{blackout_note}\n"
+        f"{perf_block}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📋 *Trend (Çoxzamanlı)*\n{trends_block}\n\n"
+        f"📰 *İqtisadi Təqvim*\n{news_block}"
     )
     return msg
 
