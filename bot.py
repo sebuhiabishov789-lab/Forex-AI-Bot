@@ -19,16 +19,16 @@ class Config:
     TOKEN = os.environ.get('TELEGRAM_TOKEN')
     CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
     MIN_TEST_ACC = float(os.environ.get('MIN_TEST_ACC', '0.50'))
-    BUY_THRESHOLD = 0.66
-    SELL_THRESHOLD = 0.34
+    BUY_THRESHOLD = 0.58
+    SELL_THRESHOLD = 0.42
     MAX_SIGNALS_PER_DAY = 5
     MIN_SIGNAL_GAP_HOURS = 2
-    MIN_CONFIDENCE_BASE = float(os.environ.get('MIN_CONFIDENCE', '0.60'))
+    MIN_CONFIDENCE_BASE = float(os.environ.get('MIN_CONFIDENCE', '0.52'))
     ACCOUNT_BALANCE = float(os.environ.get('ACCOUNT_BALANCE', '1000'))
     RISK_PERCENT = float(os.environ.get('RISK_PERCENT', '1.0'))
     PIP_VALUE = 0.0001
     LOT_PIP_VALUE = 10.0
-    MIN_ATR_RATIO = 0.6
+    MIN_ATR_RATIO = 0.4
 
 config = Config()
 
