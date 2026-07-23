@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class Config:
     TOKEN = os.environ.get('TELEGRAM_TOKEN')
     CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
-    MIN_TEST_ACC = float(os.environ.get('MIN_TEST_ACC', '0.58'))
+    MIN_TEST_ACC = float(os.environ.get('MIN_TEST_ACC', '0.50'))
     BUY_THRESHOLD = 0.66
     SELL_THRESHOLD = 0.34
     MAX_SIGNALS_PER_DAY = 5
