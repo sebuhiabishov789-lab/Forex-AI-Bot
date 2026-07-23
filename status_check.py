@@ -8,6 +8,7 @@ TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 OFFSET_FILE = Path("telegram_offset.txt")
 TRIGGER = "a"
+NL = chr(10)
 
 def get_offset():
     if OFFSET_FILE.exists():
@@ -23,29 +24,30 @@ def save_offset(v):
 def run():
     offset = get_offset()
     url = "https://api.telegram.org/bot" + TOKEN + "/getUpdates"
-    r = requests.get(url, params={"offset": offset, "timeout": 0}, timeout=15).json()
+    r = requests.get(url, params={"offset": offset}, timeout=15).json()
     results = r.get("result", [])
-    if not results:
-        save_offset(offset)
-        return
     max_id = offset
     for upd in results:
         uid = upd.get("update_id", 0)
-        max_id = max(max_id, uid + 1)
-        msg = upd.get("message")
-        if not msg:
+        if uid + 1 > max_id:
+            max_id = uid + 1
+        m = upd.get("message")
+        if not m:
             continue
-        text = str(msg.get("text", "")).lower().strip()
-        cid = str(msg.get("chat", {}).get("id", ""))
+        txt_in = str(m.get("text","")).strip().lower()
+        cid = str(m.get("chat",{}).get("id",""))
         if cid != CHAT_ID:
             continue
-        if text == TRIGGER:
+        if txt_in == TRIGGER:
             st = market_utils.get_current_status()
-            if not st:
-                txt = "Data yoxdur"
+            if st is None:
+                msg = "Data yoxdur"
             else:
-                txt = "Qiymet: " + str(st['current_price']) + "\nProb: " + str(st['prob']) + "\nTrend UP: " + str(st['trend_up'])
-            requests.post("https://api.telegram.org/bot" + TOKEN + "/sendMessage", json={"chat_id": cid, "text": txt}, timeout=15)
+                p = str(st.get("current_price"))
+                pr = str(st.get("prob"))
+                up = str(st.get("trend_up"))
+                msg = "Qiymet: " + p + NL + "Prob: " + pr + NL + "Trend UP: " + up
+            requests.post("https://api.telegram.org/bot" + TOKEN + "/sendMessage", json={"chat_id": cid, "text": msg}, timeout=15)
     save_offset(max_id)
 
 if __name__ == "__main__":
