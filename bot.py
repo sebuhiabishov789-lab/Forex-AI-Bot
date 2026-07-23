@@ -22,7 +22,7 @@ REQUIRE_TECHNICAL_CONFIRMATION = True
 # --- Gündəlik limit tənzimləmələri ---
 MAX_SIGNALS_PER_DAY = 5
 MIN_SIGNAL_GAP_HOURS = 2
-MIN_CONFIDENCE_BASE = float(os.environ.get('MIN_CONFIDENCE', 0.60))  # əsas əminlik eşiyi
+MIN_CONFIDENCE_BASE = float(os.environ.get('MIN_CONFIDENCE', 0.60))
 
 # --- Risk və lot hesablanması üçün parametrlər ---
 ACCOUNT_BALANCE = float(os.environ.get('ACCOUNT_BALANCE', 1000))
@@ -31,7 +31,7 @@ PIP_VALUE = float(os.environ.get('PIP_VALUE', 0.0001))
 LOT_PIP_VALUE = float(os.environ.get('LOT_PIP_VALUE', 10.0))
 
 # --- Volatillik filtri ---
-MIN_ATR_RATIO = 0.6  # ATR nisbəti (cari ATR / son 50 bar ATR medianı) bu həddən aşağı olarsa, diapazon bazarı sayılıb siqnal verilmir
+MIN_ATR_RATIO = 0.6
 
 
 def send_telegram(message):
@@ -49,7 +49,6 @@ def send_telegram(message):
 
 
 def get_next_signal_id():
-    """Sadə avtomatik artan siqnal ID-si yaradır (faylın mövcud son ID-sinə +1)."""
     max_id = 0
     if os.path.isfile(LOG_FILE):
         with open(LOG_FILE, 'r', encoding='utf-8') as f:
@@ -62,7 +61,6 @@ def get_next_signal_id():
 
 
 def log_signal(direction, entry, sl, tp, prob, test_acc, confidence, lot_size=None, signal_id=None):
-    """Hər göndərilən siqnalı CSV-ə yazır. Lot ölçüsü qeyd edilir."""
     file_exists = os.path.isfile(LOG_FILE)
     with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -135,12 +133,7 @@ def cooldown_active(last_signal_at):
     return datetime.now(timezone.utc) - last_dt < timedelta(hours=MIN_SIGNAL_GAP_HOURS)
 
 
-# ----------------------------------------------------------------------
-# YENİ FUNKSİYALAR: Dinamik eşik, volatillik yoxlaması
-# ----------------------------------------------------------------------
-
 def get_recent_win_rate(last_n=10):
-    """Son N qapalı siqnalın win rate-ni qaytarır (ədəd 0-1 arası). Heç nə yoxdursa 0.5 qəbul edirik."""
     if not os.path.isfile(LOG_FILE):
         return 0.5
     results = []
@@ -158,43 +151,31 @@ def get_recent_win_rate(last_n=10):
 
 
 def dynamic_min_confidence():
-    """Son performansa görə minimum əminlik skorunu dinamik tənzimləyir."""
     win_rate = get_recent_win_rate(10)
     if win_rate < 0.4:
-        # Son siqnallar çox zərərlidir — əminlik eşiyini yüksəlt
         return MIN_CONFIDENCE_BASE + 0.15
     elif win_rate < 0.5:
         return MIN_CONFIDENCE_BASE + 0.08
     elif win_rate > 0.6:
-        # Yaxşı performans — biraz rahatlaya bilərik
         return max(0.55, MIN_CONFIDENCE_BASE - 0.05)
     else:
         return MIN_CONFIDENCE_BASE
 
 
 def is_low_volatility(status):
-    """ATR nisbətinə əsasən diapazon bazarı olub-olmadığını yoxlayır."""
     try:
-        atr_ratio = market_utils.compute_atr_ratio(status['data'])
-        # atr_ratio funksiyasını market_utils-ə əlavə edək deyə burada sadəcə ATR/median yoxlayırıq
-        # Bunun üçün market_utils-də birbaşa ATR_ratio istifadə edə bilərik: status-un içində yoxdur,
-        # amma data daxilində var. Dataların son ATR_ratio dəyərini əldə edək.
         atr_ratio = status['data']['ATR_ratio'].iloc[-1]
         return atr_ratio < MIN_ATR_RATIO
     except (KeyError, IndexError):
         return False
 
 
-# ----------------------------------------------------------------------
-# Texniki təsdiq funksiyaları (əvvəlki ilə eyni)
-# ----------------------------------------------------------------------
-
 def technical_confirms_buy(pattern, support, current_price, trend_slope):
     reasons = []
     if pattern in ("Double Bottom", "Triangle (converging)"):
         reasons.append(f"fiqur: {pattern}")
     if support is not None and (current_price - support) / current_price < 0.003:
-        reasons.append("support səviyyəsinə yaxın")
+        reasons.append("dəstək səviyyəsinə yaxın")
     if trend_slope > 0:
         reasons.append("trend xətti yuxarı meyllidir")
     return reasons
@@ -205,15 +186,11 @@ def technical_confirms_sell(pattern, resistance, current_price, trend_slope):
     if pattern in ("Double Top", "Triangle (converging)"):
         reasons.append(f"fiqur: {pattern}")
     if resistance is not None and (resistance - current_price) / current_price < 0.003:
-        reasons.append("resistance səviyyəsinə yaxın")
+        reasons.append("müqavimət səviyyəsinə yaxın")
     if trend_slope < 0:
         reasons.append("trend xətti aşağı meyllidir")
     return reasons
 
-
-# ----------------------------------------------------------------------
-# Ana bot məntiqi
-# ----------------------------------------------------------------------
 
 def run_bot():
     status = market_utils.get_current_status()
@@ -241,12 +218,10 @@ def run_bot():
         print(f"Model dəqiqliyi kifayət qədər deyil ({test_acc:.2%}), siqnal göndərilmir.")
         return
 
-    # --- Volatillik filtri ---
     if is_low_volatility(status):
         print("ATR nisbəti çox aşağıdır (diapazon bazarı), siqnal göndərilmir.")
         return
 
-    # --- Fundamental analiz: yüksək təsirli xəbər sükutu (yenilənmiş) ---
     is_blackout, event_title, event_time = economic_calendar.check_news_blackout()
     if is_blackout:
         print(
@@ -256,7 +231,6 @@ def run_bot():
         )
         return
 
-    # --- Gündəlik limit və cooldown yoxlaması ---
     today, sent_today, last_signal_at = load_daily_state()
 
     if sent_today >= MAX_SIGNALS_PER_DAY:
@@ -267,46 +241,48 @@ def run_bot():
         print(f"Son siqnaldan bəri {MIN_SIGNAL_GAP_HOURS} saat keçməyib, göndərilmir.")
         return
 
-    # --- Dinamik minimum əminlik eşiyi ---
     dynamic_min_conf = dynamic_min_confidence()
     print(f"Dinamik minimum əminlik: {dynamic_min_conf:.2f} (baza: {MIN_CONFIDENCE_BASE})")
 
     signal_sent = False
 
-    # ------------------------------------------------------------------ BUY
+    # ------------------------------------------------------------------ ALIŞ
     if prob > BUY_THRESHOLD and trend_up:
         tech_reasons = technical_confirms_buy(pattern, support, current_price, trend_slope)
 
         if REQUIRE_TECHNICAL_CONFIRMATION and not tech_reasons:
-            print("ML BUY siqnalı var, amma texniki təsdiq yoxdur — siqnal ötürüldü.")
+            print("ML ALIŞ siqnalı var, amma texniki təsdiq yoxdur — siqnal ötürüldü.")
         else:
             confidence = compute_confidence(prob, test_acc, len(tech_reasons), aligned_tf_up, model_agreement)
 
             if confidence < dynamic_min_conf:
-                print(f"BUY namizədi var, amma əminlik kifayət deyil ({confidence:.2f} < {dynamic_min_conf:.2f}), göndərilmir.")
+                print(f"ALIŞ namizədi var, amma əminlik kifayət deyil ({confidence:.2f} < {dynamic_min_conf:.2f}), göndərilmir.")
             else:
                 sl = support if support is not None else current_price - 1.5 * current_atr
-                sl = max(sl, current_price - 0.5 * current_atr)   # minimum SL məsafəsi
+                sl = max(sl, current_price - 0.5 * current_atr)
                 tp = resistance if resistance is not None else current_price + 3.0 * current_atr
                 tp = max(tp, current_price + 1.0 * current_atr)
 
                 lot_size = calculate_lot_size(current_price, sl)
                 signal_id = get_next_signal_id()
 
-                confidence_note = f"✅ Texniki təsdiq: {', '.join(tech_reasons)}"
+                reasons_str = ", ".join(tech_reasons) if tech_reasons else "yoxdur"
 
                 msg = (
-                    f"🚀 SİQNAL: ALIŞ (BUY) #{signal_id}\n"
-                    f"Qiymət: {round(current_price, 5)}\n"
-                    f"SL: {round(sl, 5)}\n"
-                    f"TP: {round(tp, 5)}\n"
-                    f"Lot: {lot_size} (hesabın {RISK_PERCENT}% riski ilə)\n"
-                    f"Ehtimal (ensemble): {prob:.0%} | Model dəqiqliyi: {test_acc:.0%}\n"
-                    f"  ↳ RandomForest: {status['rf_prob']:.0%} | GradientBoosting: {status['gb_prob']:.0%}\n"
-                    f"Əminlik skoru: {confidence:.0%} (dinamik limit: {dynamic_min_conf:.0%})\n"
-                    f"Fiqur: {pattern}\n"
-                    f"{confidence_note}\n"
-                    f"Bugünkü siqnal: {sent_today + 1}/{MAX_SIGNALS_PER_DAY}\n\n"
+                    f"🚀 ALIŞ SİQNALI #{signal_id}\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"💰 Giriş qiyməti: {current_price:.5f}\n"
+                    f"🛑 Stop Loss: {sl:.5f}\n"
+                    f"🎯 Take Profit: {tp:.5f}\n"
+                    f"📊 Həcm: {lot_size} lot (hesabın {RISK_PERCENT}% riski)\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"🤖 Model ehtimalı: {prob:.0%}\n"
+                    f"📈 Model dəqiqliyi: {test_acc:.0%}\n"
+                    f"🔹 RF: {status['rf_prob']:.0%} | GB: {status['gb_prob']:.0%}\n"
+                    f"🎯 Əminlik: {confidence:.0%} (min. tələb: {dynamic_min_conf:.0%})\n"
+                    f"📐 Fiqur: {pattern}\n"
+                    f"✅ Texniki təsdiq: {reasons_str}\n"
+                    f"📅 Bugünkü siqnal: {sent_today + 1}/{MAX_SIGNALS_PER_DAY}\n\n"
                     f"{trends_block}"
                 )
                 send_telegram(msg)
@@ -314,17 +290,17 @@ def run_bot():
                 save_daily_state(today, sent_today + 1, datetime.now(timezone.utc).isoformat())
                 signal_sent = True
 
-    # ----------------------------------------------------------------- SELL
+    # ----------------------------------------------------------------- SATIŞ
     elif prob < SELL_THRESHOLD and not trend_up:
         tech_reasons = technical_confirms_sell(pattern, resistance, current_price, trend_slope)
 
         if REQUIRE_TECHNICAL_CONFIRMATION and not tech_reasons:
-            print("ML SELL siqnalı var, amma texniki təsdiq yoxdur — siqnal ötürüldü.")
+            print("ML SATIŞ siqnalı var, amma texniki təsdiq yoxdur — siqnal ötürüldü.")
         else:
             confidence = compute_confidence(1 - prob, test_acc, len(tech_reasons), aligned_tf_down, model_agreement)
 
             if confidence < dynamic_min_conf:
-                print(f"SELL namizədi var, amma əminlik kifayət deyil ({confidence:.2f} < {dynamic_min_conf:.2f}), göndərilmir.")
+                print(f"SATIŞ namizədi var, amma əminlik kifayət deyil ({confidence:.2f} < {dynamic_min_conf:.2f}), göndərilmir.")
             else:
                 sl = resistance if resistance is not None else current_price + 1.5 * current_atr
                 sl = max(sl, current_price + 0.5 * current_atr)
@@ -334,20 +310,23 @@ def run_bot():
                 lot_size = calculate_lot_size(current_price, sl)
                 signal_id = get_next_signal_id()
 
-                confidence_note = f"✅ Texniki təsdiq: {', '.join(tech_reasons)}"
+                reasons_str = ", ".join(tech_reasons) if tech_reasons else "yoxdur"
 
                 msg = (
-                    f"📉 SİQNAL: SATIŞ (SELL) #{signal_id}\n"
-                    f"Qiymət: {round(current_price, 5)}\n"
-                    f"SL: {round(sl, 5)}\n"
-                    f"TP: {round(tp, 5)}\n"
-                    f"Lot: {lot_size} (hesabın {RISK_PERCENT}% riski ilə)\n"
-                    f"Ehtimal (ensemble): {1 - prob:.0%} | Model dəqiqliyi: {test_acc:.0%}\n"
-                    f"  ↳ RandomForest: {1 - status['rf_prob']:.0%} | GradientBoosting: {1 - status['gb_prob']:.0%}\n"
-                    f"Əminlik skoru: {confidence:.0%} (dinamik limit: {dynamic_min_conf:.0%})\n"
-                    f"Fiqur: {pattern}\n"
-                    f"{confidence_note}\n"
-                    f"Bugünkü siqnal: {sent_today + 1}/{MAX_SIGNALS_PER_DAY}\n\n"
+                    f"📉 SATIŞ SİQNALI #{signal_id}\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"💰 Giriş qiyməti: {current_price:.5f}\n"
+                    f"🛑 Stop Loss: {sl:.5f}\n"
+                    f"🎯 Take Profit: {tp:.5f}\n"
+                    f"📊 Həcm: {lot_size} lot (hesabın {RISK_PERCENT}% riski)\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"🤖 Model ehtimalı: {1 - prob:.0%}\n"
+                    f"📈 Model dəqiqliyi: {test_acc:.0%}\n"
+                    f"🔹 RF: {1 - status['rf_prob']:.0%} | GB: {1 - status['gb_prob']:.0%}\n"
+                    f"🎯 Əminlik: {confidence:.0%} (min. tələb: {dynamic_min_conf:.0%})\n"
+                    f"📐 Fiqur: {pattern}\n"
+                    f"✅ Texniki təsdiq: {reasons_str}\n"
+                    f"📅 Bugünkü siqnal: {sent_today + 1}/{MAX_SIGNALS_PER_DAY}\n\n"
                     f"{trends_block}"
                 )
                 send_telegram(msg)
