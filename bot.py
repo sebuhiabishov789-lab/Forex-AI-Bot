@@ -1,4 +1,4 @@
-import os, csv, json, logging, requests
+import os, csv, json, logging, requests, html
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple
@@ -29,6 +29,8 @@ class Config:
     PIP_VALUE = 0.0001
     LOT_PIP_VALUE = 10.0
     MIN_ATR_RATIO = 0.4
+    MAX_CONSECUTIVE_LOSSES = int(os.environ.get('MAX_CONSECUTIVE_LOSSES', '4'))
+    LOSS_STREAK_COOLDOWN_HOURS = float(os.environ.get('LOSS_STREAK_COOLDOWN_HOURS', '12'))
 
 config = Config()
 
@@ -54,7 +56,9 @@ def get_next_signal_id() -> int:
             reader = csv.DictReader(f)
             ids = [int(row['signal_id']) for row in reader if row.get('signal_id','').isdigit()]
             return max(ids, default=0) + 1
-    except: return 1
+    except Exception as e:
+        logger.warning(f"signal_id oxunmadı, 1-dən başlanır: {e}")
+        return 1
 
 def log_signal(direction, entry, sl, tp, prob, test_acc, confidence, lot_size=None, signal_id=None):
     is_new = not LOG_FILE.exists()
@@ -84,7 +88,8 @@ def load_daily_state():
             state = json.loads(STATE_FILE.read_text('utf-8'))
             if state.get('date') == today:
                 return today, state.get('count',0), state.get('last_signal_at')
-        except: pass
+        except Exception as e:
+            logger.warning(f"Gündəlik state oxunmadı: {e}")
     return today, 0, None
 
 def save_daily_state(date_str, count, last_at):
@@ -101,7 +106,47 @@ def can_send_signal(current_count, last_signal_at_str):
             last = datetime.fromisoformat(last_signal_at_str)
             if datetime.now(timezone.utc) - last < timedelta(hours=config.MIN_SIGNAL_GAP_HOURS):
                 return False, f"Son siqnaldan {config.MIN_SIGNAL_GAP_HOURS} saat keçməyib"
-        except: pass
+        except Exception as e:
+            logger.warning(f"Son siqnal vaxtı parse olunmadı: {e}")
+    return True, "OK"
+
+def check_loss_streak() -> Tuple[bool, str]:
+    """Son bağlanmış (OPEN olmayan) siqnallara baxıb ardıcıl neçə LOSS olduğunu
+    hesablayır. MAX_CONSECUTIVE_LOSSES-ə çatıbsa, son itkidən LOSS_STREAK_COOLDOWN_HOURS
+    saat ərzində yeni siqnal göndərilməsinin qarşısını alır (circuit breaker)."""
+    if not LOG_FILE.exists():
+        return True, "OK"
+    try:
+        with LOG_FILE.open('r', encoding='utf-8') as f:
+            rows = list(csv.DictReader(f))
+    except Exception as e:
+        logger.warning(f"Loss-streak yoxlaması üçün log oxunmadı: {e}")
+        return True, "OK"
+
+    closed = [r for r in rows if r.get('outcome', '').upper() in ('WIN', 'LOSS')]
+    if not closed:
+        return True, "OK"
+    closed.sort(key=lambda r: r.get('closed_at') or '', reverse=True)
+
+    streak = 0
+    last_loss_closed_at = None
+    for r in closed:
+        if r.get('outcome', '').upper() == 'LOSS':
+            streak += 1
+            if last_loss_closed_at is None:
+                last_loss_closed_at = r.get('closed_at')
+        else:
+            break
+
+    if streak >= config.MAX_CONSECUTIVE_LOSSES:
+        try:
+            closed_at = datetime.fromisoformat(last_loss_closed_at)
+            if datetime.now(timezone.utc) - closed_at < timedelta(hours=config.LOSS_STREAK_COOLDOWN_HOURS):
+                return False, f"{streak} ardıcıl itki - {config.LOSS_STREAK_COOLDOWN_HOURS} saatlıq soyuma dövründəyik"
+        except Exception:
+            # closed_at parse olunmadısa, ehtiyat tədbiri kimi yenə də dayandırırıq
+            return False, f"{streak} ardıcıl itki - soyuma dövrü (vaxt oxunmadı)"
+
     return True, "OK"
 
 def main():
@@ -117,6 +162,10 @@ def main():
         logger.info(f"last_status.json kaydedildi: {status.get('current_price')}")
     except Exception as e:
         logger.error(f"Cache kayıt hatası: {e}")
+
+    if status.get('is_synthetic'):
+        logger.error("Data SİNTETİKDİR (yfinance/Frankfurter uğursuz oldu) - siqnal göndərilmir, təhlükəsizlik dayanması")
+        return
 
     prob = status['prob']
     test_acc = status['test_acc']
@@ -170,6 +219,12 @@ def main():
         logger.info(f"Göndərilmədi: {reason}")
         return
 
+    # Ardıcıl itki circuit breaker
+    streak_ok, streak_reason = check_loss_streak()
+    if not streak_ok:
+        logger.info(f"Göndərilmədi: {streak_reason}")
+        return
+
     # SL/TP
     sl = price - atr*1.5 if direction=="BUY" else price + atr*1.5
     tp = price + atr*2.5 if direction=="BUY" else price - atr*2.5
@@ -183,8 +238,8 @@ def main():
         f"📊 Ehtimal: {prob*100:.1f}% | Dəqiqlik: {test_acc*100:.1f}%\n"
         f"🎯 Güvən: {confidence*100:.0f}% | Lot: {lot}\n"
         f"ATR nisbəti: {atr_ratio:.2f}\n"
-        f"Pattern: {status['pattern']}\n"
-        f"{economic_calendar.format_upcoming_high_impact(12)}"
+        f"Pattern: {html.escape(str(status['pattern']))}\n"
+        f"{html.escape(economic_calendar.format_upcoming_high_impact(12))}"
     )
 
     if send_telegram(msg):
