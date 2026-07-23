@@ -14,18 +14,21 @@ TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 # --- Keyfiyyət tənzimləmələri ---
-MIN_TEST_ACC = 0.53
+MIN_TEST_ACC = float(os.environ.get('MIN_TEST_ACC', 0.58))
 BUY_THRESHOLD = 0.66
 SELL_THRESHOLD = 0.34
-
-# True: yalnız ML siqnalı VƏ texniki analiz (fiqur/support-resistance/trend
-# xətti) eyni istiqamətə işarə etdikdə siqnal namizədi kimi qəbul edilir.
 REQUIRE_TECHNICAL_CONFIRMATION = True
 
 # --- Gündəlik limit tənzimləmələri ---
 MAX_SIGNALS_PER_DAY = 5
-MIN_SIGNAL_GAP_HOURS = 2  # ard-arda siqnallar arasında minimum aralıq
-MIN_CONFIDENCE = 0.60  # 0-1 aralığında, bundan aşağı əminlikli siqnal göndərilmir
+MIN_SIGNAL_GAP_HOURS = 2
+MIN_CONFIDENCE = float(os.environ.get('MIN_CONFIDENCE', 0.60))
+
+# --- Risk və lot hesablanması üçün parametrlər ---
+ACCOUNT_BALANCE = float(os.environ.get('ACCOUNT_BALANCE', 1000))       # hesab valyutasında
+RISK_PERCENT = float(os.environ.get('RISK_PERCENT', 1.0))             # hər ticarətə risk %
+PIP_VALUE = float(os.environ.get('PIP_VALUE', 0.0001))                # 1 pip qiymət dəyişimi (JPY cütləri üçün 0.01)
+LOT_PIP_VALUE = float(os.environ.get('LOT_PIP_VALUE', 10.0))          # 1 standart lot üçün pip dəyəri (USD əsaslı hesabda 10)
 
 
 def send_telegram(message):
@@ -42,8 +45,8 @@ def send_telegram(message):
         print("TOKEN/CHAT_ID tapılmadı, mesaj göndərilmədi.")
 
 
-def log_signal(direction, entry, sl, tp, prob, test_acc, confidence):
-    """Hər göndərilən siqnalı CSV-ə yazır ki, zamanla real statistika toplansın."""
+def log_signal(direction, entry, sl, tp, prob, test_acc, confidence, lot_size=None):
+    """Hər göndərilən siqnalı CSV-ə yazır. Lot ölçüsü qeyd edilir."""
     file_exists = os.path.isfile(LOG_FILE)
     with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -51,39 +54,49 @@ def log_signal(direction, entry, sl, tp, prob, test_acc, confidence):
             writer.writerow([
                 'timestamp_utc', 'direction', 'entry', 'sl', 'tp',
                 'probability', 'model_test_acc', 'confidence',
-                'outcome', 'closed_at', 'pip_result'
+                'lot_size', 'outcome', 'closed_at', 'pip_result'
             ])
         writer.writerow([
             datetime.now(timezone.utc).isoformat(), direction,
             round(entry, 5), round(sl, 5), round(tp, 5),
             round(prob, 4), round(test_acc, 4), round(confidence, 4),
+            round(lot_size, 2) if lot_size else '',
             'OPEN', '', '',
         ])
 
 
+def calculate_lot_size(entry, sl):
+    """
+    Hər ticarət üçün riskə uyğun lot sayını hesablayır.
+    Formula: lot = (balans * risk%) / (SL məsafəsi (pips) * pip dəyəri)
+    """
+    risk_amount = ACCOUNT_BALANCE * (RISK_PERCENT / 100.0)
+    sl_distance_pips = abs(entry - sl) / PIP_VALUE
+    if sl_distance_pips == 0:
+        return 0.0
+    lot = risk_amount / (sl_distance_pips * LOT_PIP_VALUE)
+    return max(round(lot, 2), 0.01)  # minimum 0.01 lot
+
+
 def compute_confidence(prob, test_acc, tech_reasons_count, aligned_timeframes, model_agreement=1.0):
-    """
-    ML ehtimalı, model dəqiqliyi, texniki təsdiq sayı, üst-üstə düşən zaman
-    dilimi trendləri və iki modelin (RF+GB) razılaşma dərəcəsini birləşdirib
-    0-1 aralığında əminlik skoru verir.
-    """
-    direction_strength = abs(prob - 0.5) * 2  # 0..1, 0.5-dən nə qədər uzaqdır
-    tech_score = min(tech_reasons_count / 3, 1.0)  # 0..1
-    acc_score = min(max((test_acc - 0.50) / 0.15, 0), 1)  # 0.50-0.65 aralığını 0..1-ə xəritələyir
-    tf_score = min(aligned_timeframes / 5, 1.0)  # 0..1, neçə TF eyni istiqamətdədir
+    """ML + texniki analiz + model dəqiqliyi əsasında 0-1 əminlik skoru."""
+    direction_strength = abs(prob - 0.5) * 2
+    tech_score = min(tech_reasons_count / 3, 1.0)
+    acc_score = min(max((test_acc - 0.50) / 0.15, 0), 1)
+    tf_score = min(aligned_timeframes / 5, 1.0)
+    model_agree_score = model_agreement
 
     confidence = (
         0.35 * direction_strength +
         0.20 * tech_score +
         0.15 * acc_score +
         0.15 * tf_score +
-        0.15 * model_agreement
+        0.15 * model_agree_score
     )
     return round(confidence, 4)
 
 
 def load_daily_state():
-    """Bugünkü göndərilən siqnal sayını və son siqnalın vaxtını oxuyur."""
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     if os.path.isfile(STATE_FILE):
         try:
@@ -93,7 +106,6 @@ def load_daily_state():
                 return today, state.get('count', 0), state.get('last_signal_at')
         except (json.JSONDecodeError, OSError):
             pass
-    # Fayl yoxdur, oxuna bilmir, ya da tarix dəyişib — sıfırdan başla
     return today, 0, None
 
 
@@ -103,7 +115,6 @@ def save_daily_state(today, count, last_signal_at):
 
 
 def cooldown_active(last_signal_at):
-    """Son siqnaldan bəri minimum aralıq keçməyibsə True qaytarır."""
     if not last_signal_at:
         return False
     try:
@@ -114,7 +125,6 @@ def cooldown_active(last_signal_at):
 
 
 def technical_confirms_buy(pattern, support, current_price, trend_slope):
-    """BUY siqnalını texniki analizlə təsdiqləyir, təsdiq səbəblərini qaytarır."""
     reasons = []
     if pattern in ("Double Bottom", "Triangle (converging)"):
         reasons.append(f"fiqur: {pattern}")
@@ -126,7 +136,6 @@ def technical_confirms_buy(pattern, support, current_price, trend_slope):
 
 
 def technical_confirms_sell(pattern, resistance, current_price, trend_slope):
-    """SELL siqnalını texniki analizlə təsdiqləyir, təsdiq səbəblərini qaytarır."""
     reasons = []
     if pattern in ("Double Top", "Triangle (converging)"):
         reasons.append(f"fiqur: {pattern}")
@@ -198,10 +207,14 @@ def run_bot():
             if confidence < MIN_CONFIDENCE:
                 print(f"BUY namizədi var, amma əminlik kifayət deyil ({confidence:.2f} < {MIN_CONFIDENCE}), göndərilmir.")
             else:
+                # SL hesablanması: ən pis halda minimum 0.5 ATR məsafə təmin edilir
                 sl = support if support is not None else current_price - 1.5 * current_atr
-                sl = min(sl, current_price - 0.5 * current_atr)
+                sl = max(sl, current_price - 0.5 * current_atr)   # DÜZƏLİŞ: min -> max
                 tp = resistance if resistance is not None else current_price + 3.0 * current_atr
                 tp = max(tp, current_price + 1.0 * current_atr)
+
+                # Lot ölçüsünü hesabla
+                lot_size = calculate_lot_size(current_price, sl)
 
                 confidence_note = f"✅ Texniki təsdiq: {', '.join(tech_reasons)}"
 
@@ -210,6 +223,7 @@ def run_bot():
                     f"Qiymət: {round(current_price, 5)}\n"
                     f"SL: {round(sl, 5)}\n"
                     f"TP: {round(tp, 5)}\n"
+                    f"Lot: {lot_size} (hesabın {RISK_PERCENT}% riski ilə)\n"
                     f"Ehtimal (ensemble): {prob:.0%} | Model dəqiqliyi: {test_acc:.0%}\n"
                     f"  ↳ RandomForest: {status['rf_prob']:.0%} | GradientBoosting: {status['gb_prob']:.0%}\n"
                     f"Əminlik skoru: {confidence:.0%}\n"
@@ -219,7 +233,7 @@ def run_bot():
                     f"{trends_block}"
                 )
                 send_telegram(msg)
-                log_signal('BUY', current_price, sl, tp, prob, test_acc, confidence)
+                log_signal('BUY', current_price, sl, tp, prob, test_acc, confidence, lot_size)
                 save_daily_state(today, sent_today + 1, datetime.now(timezone.utc).isoformat())
                 signal_sent = True
 
@@ -230,6 +244,7 @@ def run_bot():
         if REQUIRE_TECHNICAL_CONFIRMATION and not tech_reasons:
             print("ML SELL siqnalı var, amma texniki təsdiq yoxdur — siqnal ötürüldü.")
         else:
+            # SELL üçün prob dəyərini 1 - prob kimi qəbul edirik
             confidence = compute_confidence(1 - prob, test_acc, len(tech_reasons), aligned_tf_down, model_agreement)
 
             if confidence < MIN_CONFIDENCE:
@@ -240,6 +255,9 @@ def run_bot():
                 tp = support if support is not None else current_price - 3.0 * current_atr
                 tp = min(tp, current_price - 1.0 * current_atr)
 
+                # Lot ölçüsünü hesabla
+                lot_size = calculate_lot_size(current_price, sl)
+
                 confidence_note = f"✅ Texniki təsdiq: {', '.join(tech_reasons)}"
 
                 msg = (
@@ -247,6 +265,7 @@ def run_bot():
                     f"Qiymət: {round(current_price, 5)}\n"
                     f"SL: {round(sl, 5)}\n"
                     f"TP: {round(tp, 5)}\n"
+                    f"Lot: {lot_size} (hesabın {RISK_PERCENT}% riski ilə)\n"
                     f"Ehtimal (ensemble): {1 - prob:.0%} | Model dəqiqliyi: {test_acc:.0%}\n"
                     f"  ↳ RandomForest: {1 - status['rf_prob']:.0%} | GradientBoosting: {1 - status['gb_prob']:.0%}\n"
                     f"Əminlik skoru: {confidence:.0%}\n"
@@ -256,7 +275,7 @@ def run_bot():
                     f"{trends_block}"
                 )
                 send_telegram(msg)
-                log_signal('SELL', current_price, sl, tp, 1 - prob, test_acc, confidence)
+                log_signal('SELL', current_price, sl, tp, 1 - prob, test_acc, confidence, lot_size)
                 save_daily_state(today, sent_today + 1, datetime.now(timezone.utc).isoformat())
                 signal_sent = True
 
