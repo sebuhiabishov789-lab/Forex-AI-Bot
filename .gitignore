@@ -1,4 +1,30 @@
+# Python cache
 __pycache__/
-   *.pyc
-   *.pyo
-   .env
+*.pyc
+*.pyo
+*.pyd
+*.pycache
+
+# Env ve gizli
+.env
+.env.local
+venv/
+.venv/
+*.log
+*.csv
+!signals_log.csv
+
+# Model cache
+tuned_params.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Telegram
+telegram_offset.txt
