@@ -1,7 +1,7 @@
 """
 market_utils.py — Ortak fonksiyonlar
 Data yükleme, indiqatorlar, ensemble model, MTF trend
-Optimallaşdırılmış versiya v2.1
+Optimallaşdırılmış versiya v2.1 - cache ile
 """
 import yfinance as yf
 import pandas as pd
@@ -13,7 +13,6 @@ from datetime import datetime, timezone, timedelta
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 
 try:
     import economic_calendar
@@ -30,6 +29,7 @@ FEATURES = [
 
 TUNED_PARAMS_FILE = "tuned_params.json"
 TUNE_EVERY_HOURS = 24
+LAST_STATUS_FILE = "last_status.json"
 
 # --- Indiqatorlar ---
 def compute_rsi(close, period=14):
@@ -64,7 +64,7 @@ def compute_adx(data, period=14):
         dx = (abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan) * 100).fillna(0)
         return dx.ewm(alpha=1/period, adjust=False).mean().fillna(20)
     except Exception as e:
-        logger.warning(f"ADX hesablama xətası: {e}")
+        logger.warning(f"ADX xeta: {e}")
         return pd.Series(20, index=data.index)
 
 def compute_bollinger_width(close, period=20, nbdev=2):
@@ -72,7 +72,6 @@ def compute_bollinger_width(close, period=20, nbdev=2):
     std = close.rolling(period).std()
     return ((sma + nbdev*std) - (sma - nbdev*std)) / sma.replace(0, np.nan)
 
-# --- Data ---
 def load_raw_data():
     for days in [90, 60, 45]:
         try:
@@ -83,7 +82,6 @@ def load_raw_data():
                 data.index = data.index.tz_localize(None)
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
-            logger.info(f"{days}g data: {len(data)} bar")
             return data
         except Exception as e:
             logger.warning(f"{days}g yukleme xetasi: {e}")
@@ -91,15 +89,10 @@ def load_raw_data():
 
 def get_market_session_vectorized(index):
     hours = index.hour
-    conditions = [
-        (hours >= 7) & (hours < 16),
-        (hours >= 13) & (hours < 21),
-        (hours >= 0) & (hours < 9),
-    ]
+    conditions = [(hours >= 7) & (hours < 16), (hours >= 13) & (hours < 21), (hours >= 0) & (hours < 9)]
     choices = [1, 2, 0]
     return np.select(conditions, choices, default=3)
 
-# --- Texniki Analiz ---
 def find_pivots(data, window=5):
     highs, lows = data['High'], data['Low']
     ph = highs == highs.rolling(window*2+1, center=True).max()
@@ -124,8 +117,7 @@ def detect_support_resistance(data, window=20):
         return None, None
     price = data['Close'].iloc[-1]
     below, above = levels[levels < price], levels[levels > price]
-    return (float(below.max()) if not below.empty else None,
-            float(above.min()) if not above.empty else None)
+    return (float(below.max()) if not below.empty else None, float(above.min()) if not above.empty else None)
 
 def detect_pattern(data, window=5, lookback=60, tolerance=0.002):
     recent = data.iloc[-lookback:]
@@ -138,7 +130,6 @@ def detect_pattern(data, window=5, lookback=60, tolerance=0.002):
         pattern = "Double Bottom" if pattern=="Yoxdur" else pattern+" / Double Bottom"
     return pattern
 
-# --- MTF ---
 def resample_ohlc(data, rule):
     return data.resample(rule).agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
 
@@ -148,18 +139,13 @@ def get_trend_label(data, rule, min_bars=55):
         if len(tf) < min_bars: return "Data azdır"
         ema_f = tf['Close'].ewm(span=20, adjust=False).mean()
         ema_s = tf['Close'].ewm(span=50, adjust=False).mean()
-        return "🟢 Yuxarı" if ema_f.iloc[-1] > ema_s.iloc[-1] else "🔴 Aşağı"
+        return "Yuxari" if ema_f.iloc[-1] > ema_s.iloc[-1] else "Asagi"
     except: return "N/A"
 
 def get_multi_timeframe_trends(data):
-    tfs = {"15 dəq":"15min","30 dəq":"30min","1 saat":"1h","4 saat":"4h","1 gün":"1D"}
+    tfs = {"15 deq":"15min","30 deq":"30min","1 saat":"1h","4 saat":"4h","1 gun":"1D"}
     return {k: get_trend_label(data, v) for k, v in tfs.items()}
 
-def count_aligned_timeframes(trends, direction_up):
-    target = "🟢 Yuxarı" if direction_up else "🔴 Aşağı"
-    return sum(1 for v in trends.values() if v == target)
-
-# --- Features ---
 def build_features(data):
     df = data.copy()
     df['Return'] = df['Close'].pct_change()
@@ -171,7 +157,6 @@ def build_features(data):
     df['Trend_up'] = (df['EMA_fast'] > df['EMA_slow']).astype(int)
     df['ATR'] = compute_atr(df)
     df['Body_ratio'] = ((df['Close']-df['Open']).abs() / (df['High']-df['Low']).replace(0, np.nan)).fillna(0)
-
     ph, _ = find_pivots(df, 5)
     slope, tval = compute_trendline(df, ph, 50)
     df['Trend_slope'] = slope
@@ -180,13 +165,11 @@ def build_features(data):
     df['BB_width'] = compute_bollinger_width(df['Close']).fillna(0)
     df['Session'] = get_market_session_vectorized(df.index)
     df['ATR_ratio'] = df['ATR'] / df['ATR'].rolling(50).median().replace(0, np.nan)
-
     df['Future_return'] = df['Close'].shift(-4) / df['Close'] - 1
     df['Target'] = (df['Future_return'] > 0.00005).astype(int)
     df.dropna(inplace=True)
     return df
 
-# --- Model ---
 def build_rf(params=None):
     d = dict(n_estimators=250, max_depth=6, min_samples_leaf=10, class_weight='balanced', random_state=42)
     if params: d.update(params)
@@ -216,15 +199,12 @@ def train_calibrated_ensemble(hist):
     rf, gb = build_rf(rf_p), build_gb(gb_p)
     rf.fit(train[FEATURES], train['Target'])
     gb.fit(train[FEATURES], train['Target'])
-
     cal_rf = LogisticRegression().fit(rf.predict_proba(calib[FEATURES])[:,1].reshape(-1,1), calib['Target'])
     cal_gb = LogisticRegression().fit(gb.predict_proba(calib[FEATURES])[:,1].reshape(-1,1), calib['Target'])
-
     rf_t = cal_rf.predict_proba(rf.predict_proba(test[FEATURES])[:,1].reshape(-1,1))[:,1]
     gb_t = cal_gb.predict_proba(gb.predict_proba(test[FEATURES])[:,1].reshape(-1,1))[:,1]
     ensemble = (rf_t + gb_t)/2
     acc = float(accuracy_score(test['Target'], (ensemble>0.5).astype(int)))
-
     return {'rf':rf,'gb':gb,'calibrator_rf':cal_rf,'calibrator_gb':cal_gb,'test_acc':acc}
 
 def predict_ensemble(models, live_row):
@@ -234,17 +214,42 @@ def predict_ensemble(models, live_row):
     gb_cal = float(models['calibrator_gb'].predict_proba([[gb_raw]])[0][1])
     return {'prob':(rf_cal+gb_cal)/2, 'rf_prob':rf_cal, 'gb_prob':gb_cal, 'model_agreement': 1.0 if (rf_cal>0.5)==(gb_cal>0.5) else 0.0}
 
-def get_current_status():
-    raw = load_raw_data()
-    if raw is None or len(raw) < 200: return None
-    data = build_features(raw)
-    if len(data) < 200: return None
+def _save_last_status(st):
+    try:
+        slim = {
+            'current_price': st.get('current_price'),
+            'prob': st.get('prob'),
+            'rf_prob': st.get('rf_prob'),
+            'gb_prob': st.get('gb_prob'),
+            'trend_up': st.get('trend_up'),
+            'test_acc': st.get('test_acc'),
+            'time': datetime.now(timezone.utc).isoformat()
+        }
+        with open(LAST_STATUS_FILE,"w") as f:
+            json.dump(slim,f)
+    except:
+        pass
 
+def _load_last_status():
+    if os.path.isfile(LAST_STATUS_FILE):
+        try:
+            with open(LAST_STATUS_FILE,"r") as f:
+                return json.load(f)
+        except:
+            return None
+    return None
+
+def _get_live_status():
+    raw = load_raw_data()
+    if raw is None or len(raw) < 200:
+        return None
+    data = build_features(raw)
+    if len(data) < 200:
+        return None
     live_row = data[FEATURES].iloc[[-1]]
     hist = data.iloc[:-1]
     models = train_calibrated_ensemble(hist)
     pred = predict_ensemble(models, live_row)
-
     return {
         'data': data,
         'prob': pred['prob'],
@@ -261,3 +266,13 @@ def get_current_status():
         'resistance': detect_support_resistance(data)[1],
         'pattern': detect_pattern(data),
     }
+
+def get_current_status():
+    try:
+        st = _get_live_status()
+        if st is not None:
+            _save_last_status(st)
+            return st
+    except Exception as e:
+        logger.warning(f"get_current_status xetasi: {e}")
+    return _load_last_status()
