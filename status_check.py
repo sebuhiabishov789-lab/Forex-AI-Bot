@@ -1,6 +1,3 @@
-"""
-status_check.py v2.1 — "a" əmri üçün polling
-"""
 import requests, os, csv, logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -10,7 +7,7 @@ load_dotenv()
 import market_utils
 import economic_calendar
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -22,18 +19,18 @@ LOG_FILE = Path("signals_log.csv")
 def get_saved_offset():
     if OFFSET_FILE.is_file():
         try:
-            content = OFFSET_FILE.read_text().strip()
-            if content.isdigit(): 
-                return int(content)
-        except: 
+            c = OFFSET_FILE.read_text().strip()
+            if c.isdigit():
+                return int(c)
+        except:
             pass
     return 0
 
 def save_offset(uid):
-    try: 
+    try:
         OFFSET_FILE.write_text(str(uid))
-    except Exception as e: 
-        logger.error(f"Offset yazi xetasi: {e}")
+    except Exception as e:
+        logger.error(e)
 
 def get_updates(offset):
     url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
@@ -44,109 +41,85 @@ def get_updates(offset):
 
 def send_telegram(chat_id, message):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    for parse in ["Markdown", ""]:
-        try:
-            payload = {"chat_id": chat_id, "text": message, "parse_mode": parse} if parse else {"chat_id": chat_id, "text": message}
-            resp = requests.post(url, json=payload, timeout=15)
-            if resp.ok: 
-                return True
-        except Exception as e:
-            logger.error(f"Telegram xetasi: {e}")
-    return False
+    try:
+        payload = {"chat_id": chat_id, "text": message}
+        resp = requests.post(url, json=payload, timeout=15)
+        return resp.ok
+    except Exception as e:
+        logger.error(e)
+        return False
 
 def get_market_session():
     h = datetime.now(timezone.utc).hour
-    if 7 <= h < 16: 
+    if 7 <= h < 16:
         return "EU London"
-    if 13 <= h < 21: 
+    if 13 <= h < 21:
         return "US NY"
-    if 0 <= h < 9: 
+    if 0 <= h < 9:
         return "JP Asiya"
     return "Qarisiq"
 
-def get_recent_performance():
-    if not LOG_FILE.is_file(): 
-        return None
-    try:
-        with LOG_FILE.open('r', encoding='utf-8') as f:
-            rows = [r for r in csv.DictReader(f) if r.get('outcome') and r['outcome']!='OPEN']
-        if not rows: 
-            return None
-        recent = rows[-5:]
-        wins = sum(1 for r in recent if r['outcome']=='WIN')
-        pips = sum(float(r['pip_result']) for r in recent if r.get('pip_result'))
-        return f"Son {len(recent)}: {wins} WIN / {len(recent)-wins} LOSE | {pips:+.1f} pip"
-    except: 
-        return None
-
 def build_status_message():
     status = market_utils.get_current_status()
-    if not status: 
-        return "Data yoxdur, bir az sonra yoxla."
+    if not status:
+        return "Data yoxdur"
 
     prob = status['prob']
-    test_acc = status['test_acc']
     price = status['current_price']
     atr = status['current_atr']
+    pattern = status['pattern']
+    mtf = market_utils.format_trends_block(status['mtf_trends'])
+    news = economic_calendar.format_upcoming_high_impact(12)
+    session = get_market_session()
+    now_str = datetime.now(timezone.utc).strftime('%H:%M UTC')
     
-    slope = status['trend_slope']
-    if slope > 0.0001: 
-        slope_desc = "keskin yuxari"
-    elif slope > 0: 
-        slope_desc = "zeif yuxari"
-    elif slope < -0.0001: 
-        slope_desc = "keskin asagi"
-    elif slope < 0: 
-        slope_desc = "zeif asagi"
-    else: 
-        slope_desc = "ufuqi"
-
-    if status['model_agreement']==1.0:
-        agreement = "Razi"
+    support_val = status.get('support')
+    resistance_val = status.get('resistance')
+    
+    if support_val is not None:
+        support_txt = str(round(support_val, 5))
     else:
-        agreement = f"Ferqli RF:{status['rf_prob']:.0%} GB:{status['gb_prob']:.0%}"
-    
-    is_blackout, title, etime = economic_calendar.check_news_blackout()
-    blackout_note = f"BLACKOUT: {title}\n" if is_blackout else ""
-    perf = get_recent_performance()
-    
-    support_line = ""
-    if status.get('support'):
-        support_line = f"Destek: {status['support']:.5f}\n"
-    
-    resistance_line = ""
-    if status.get('resistance'):
-        resistance_line = f"Direnc: {status['resistance']:.5f}\n"
+        support_txt = "-"
+        
+    if resistance_val is not None:
+        resistance_txt = str(round(resistance_val, 5))
+    else:
+        resistance_txt = "-"
 
-    trend_str = "UP" if status['trend_up'] else "DOWN"
+    if status['trend_up']:
+        trend_txt = "UP"
+    else:
+        trend_txt = "DOWN"
+
+    rf = status['rf_prob']
+    gb = status['gb_prob']
     
-    msg = (
-        f"Bazar Statusu {get_market_session()} {datetime.now(timezone.utc).strftime('%H:%M UTC')}\n"
-        f"--------------------------------\n"
-        f"{price:.5f} | ATR: {atr:.5f}\n"
-        f"Trend: {trend_str} ({slope_desc})\n"
-        f"Fiqur: {status['pattern']}\n"
-        f"{support_line}"
-        f"{resistance_line}"
-        f"\nRF: {status['rf_prob']:.0%} | GB: {status['gb_prob']:.0%} | Ens: {prob:.0%} | Acc: {test_acc:.0%}\n"
-        f"{agreement}\n"
-        f"BUY:{status['aligned_tf_up']}/5 SELL:{status['aligned_tf_down']}/5\n"
-        f"{blackout_note}"
-        f"{'Perf: '+perf+'\n' if perf else ''}\n"
-        f"MTF:\n{market_utils.format_trends_block(status['mtf_trends'])}\n\n"
-        f"{economic_calendar.format_upcoming_high_impact(12)}"
-    )
-    return msg
+    # mesajı hissə-hissə yığırıq, f-string içində \n yoxdur
+    parts = []
+    parts.append(f"Bazar Statusu {session} {now_str}")
+    parts.append("----------------")
+    parts.append(f"Qiymet: {price} ATR: {atr}")
+    parts.append(f"Trend: {trend_txt} Pattern: {pattern}")
+    parts.append(f"Destek: {support_txt} Direnc: {resistance_txt}")
+    parts.append(f"RF: {rf} GB: {gb} ENS: {prob}")
+    parts.append("")
+    parts.append("MTF:")
+    parts.append(mtf)
+    parts.append("")
+    parts.append(news)
+    
+    final_msg = "\n".join(parts)
+    return final_msg
 
 def run():
     if not TOKEN or not CHAT_ID:
-        logger.error("TOKEN/CHAT_ID yoxdur")
+        logger.error("TOKEN yoxdur")
         return
     offset = get_saved_offset()
     try:
         updates = get_updates(offset)
     except Exception as e:
-        logger.error(f"getUpdates: {e}")
+        logger.error(e)
         return
     if not updates:
         logger.info("Yeni mesaj yoxdur")
@@ -154,18 +127,20 @@ def run():
         return
     max_id = offset
     for upd in updates:
-        uid = upd.get("update_id",0)
-        max_id = max(max_id, uid+1)
+        uid = upd.get("update_id", 0)
+        if uid + 1 > max_id:
+            max_id = uid + 1
         msg = upd.get("message")
-        if not msg: 
+        if not msg:
             continue
-        text = msg.get("text","").strip().lower()
-        cid = str(msg.get("chat",{}).get("id",""))
-        if cid != str(CHAT_ID): 
+        text = msg.get("text", "").strip().lower()
+        cid = str(msg.get("chat", {}).get("id", ""))
+        if cid != str(CHAT_ID):
             continue
         if text == TRIGGER_WORD:
-            logger.info(f"'{TRIGGER_WORD}' geldi")
-            send_telegram(cid, build_status_message())
+            logger.info("Trigger geldi")
+            txt = build_status_message()
+            send_telegram(cid, txt)
     save_offset(max_id)
 
 if __name__ == "__main__":
