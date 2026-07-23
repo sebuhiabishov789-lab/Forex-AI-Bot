@@ -1,0 +1,32 @@
+name: Outcome Tracker
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # hər 15 dəqiqə
+  workflow_dispatch:          # manual başlatma imkanı
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reponu klonla
+        uses: actions/checkout@v4
+
+      - name: Python qur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Asılılıqları yüklə
+        run: pip install -r requirements.txt
+
+      - name: İzləmə skriptini işə sal
+        run: python outcome_tracker.py
+
+      - name: Dəyişiklikləri commit et
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add signals_log.csv
+          git diff --staged --quiet || git commit -m "Siqnal nəticələri yeniləndi"
+          git push
