@@ -64,8 +64,12 @@ jobs:
             fi
           done
           
-          # Dəyişiklik varsa commit et və push et
-          if [[ -n $(git status --porcelain) ]]; then
+          # Dəyişiklik varsa commit et və push et.
+          # DİQQƏT: "git status --porcelain" ilə YOX, "git diff --cached" ilə
+          # yoxlanır — çünki __pycache__ kimi untracked fayllar da
+          # status-da görünür, amma onlar git add ilə əlavə edilməyib.
+          # Bu, "nothing added to commit" xətasının qarşısını alır.
+          if ! git diff --cached --quiet; then
             git commit -m "Update signal logs, state, and offset"
 
             # Push zamanı digər paralel run push etmiş ola bilər — belə halda
