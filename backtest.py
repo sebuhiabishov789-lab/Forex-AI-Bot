@@ -1,80 +1,46 @@
 """
-Backtest skripti — bot.py-dəki strategiyanı keçmiş data üzərində simulyasiya edir.
+Backtest skripti — bot.py-dəki CANLI strategiyanı (eyni feature-lar, eyni RF+GB
+kalibrə olunmuş ensemble, eyni threshold-lar) keçmiş data üzərində simulyasiya edir.
 
 İşlətmək üçün:
     python backtest.py
 
 Nə edir:
-1. 60 günlük 15dəq EURUSD datasını yükləyir.
-2. Datanı 80% / 20% (train / test) bölür.
-3. Modeli yalnız train hissəsində öyrədir (bot.py ilə eyni feature-lar).
-4. Test hissəsindəki hər bar üçün bot.py-dəki eyni threshold + trend filtrini tətbiq edir.
-5. Hər "siqnal" üçün irəliyə doğru gedib SL/TP-dən hansının əvvəl toxunduğunu yoxlayır.
-6. Nəticədə: neçə siqnal, neçəsi uğurlu (TP), neçəsi uğursuz (SL),
-   win rate, məcmu pip nəticəsi, profit factor çap edir.
+1. market_utils.load_raw_data() + build_features() ilə CANLI botla EYNİ 12 feature-ı
+   hesablayır (əvvəlki versiyada backtest yalnız 5 sadə feature işlədirdi - artıq belə deyil).
+2. Datanı 70% / 15% / 15% (train / kalibrasiya / test) bölür — bot.py-dəki
+   train_calibrated_ensemble() ilə EYNİ məntiq (RandomForest + GradientBoosting,
+   hər ikisi ayrı-ayrı kalibrə olunur, sonra ortalanır).
+3. Test hissəsindəki hər bar üçün bot.py-dəki Config-dən gələn EYNİ
+   BUY/SELL threshold, MIN_TEST_ACC və ATR filtrini tətbiq edir.
+4. Hər "siqnal" üçün irəliyə doğru gedib SL/TP-dən hansının əvvəl toxunduğunu yoxlayır,
+   HƏM DƏ sabit spread xərcini nəzərə alır (real ticarətdə hər girişdə ödənilir).
+5. Nəticədə: neçə siqnal, neçəsi uğurlu (TP), neçəsi uğursuz (SL), win rate,
+   məcmu pip nəticəsi (spread xərci çıxılmış), profit factor çap edir.
 
-Qeyd: Bu, sadələşdirilmiş backtestdir (spread/slippage/komissiya nəzərə alınmır,
-   model yalnız bir dəfə öyrədilir — real botda hər işə düşəndə yenidən öyrədilir).
-   Buna baxmayaraq, strategiyanın ümumi məntiqinin nə dərəcədə işlək olduğu haqqında
-   real vaxtda gözləmədən dəyərli bir ilkin fikir verir.
+QALAN MƏHDUDİYYƏTLƏR (hələ tam canlı botu əks etdirmir):
+- Çoxlu-timeframe (MTF) trend uyğunluğu və dəstək/müqavimət əsaslı `confidence`
+  filtri backtest-də hesablanmır (hər bar üçün bunu hesablamaq performansca
+  bahalıdır) — yəni backtest canlıdan bir qədər DAHA ÇOX siqnal buraxa bilər.
+- Model backtest boyu YALNIZ BİR DƏFƏ öyrədilir (canlı botda hər
+  MODEL_RETRAIN_EVERY_HOURS-də bir yenidən öyrədilir) — uzun test dövründə bu,
+  nəticələri optimistik göstərə bilər (regime dəyişikliyi nəzərə alınmır).
+- Slippage və komissiya modelə salınmayıb, yalnız sabit spread çıxılır.
+Bu səbəblərdən backtest nəticələrini "yuxarı hədd" (upper bound) kimi oxu, canlı
+performansın bundan bir qədər zəif olması normaldır.
 """
 
-import yfinance as yf
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 
+import market_utils
+from bot import config as bot_config
 
-def compute_rsi(close, period=14):
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50)
-
-
-def compute_macd(close, fast=12, slow=26, signal=9):
-    ema_fast = close.ewm(span=fast, adjust=False).mean()
-    ema_slow = close.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    return macd_line - signal_line
-
-
-def compute_atr(data, period=14):
-    high_low = data['High'] - data['Low']
-    high_cp = (data['High'] - data['Close'].shift()).abs()
-    low_cp = (data['Low'] - data['Close'].shift()).abs()
-    tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
-
-
-def load_and_prepare():
-    data = yf.download('EURUSD=X', period='60d', interval='15m', auto_adjust=True)
-    if data.index.tz is not None:
-        data.index = data.index.tz_localize(None)
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-
-    data['Return'] = data['Close'].pct_change()
-    data['Range'] = (data['High'] - data['Low']) / data['Close']
-    data['RSI'] = compute_rsi(data['Close'])
-    data['MACD_hist'] = compute_macd(data['Close'])
-    data['EMA_fast'] = data['Close'].ewm(span=20, adjust=False).mean()
-    data['EMA_slow'] = data['Close'].ewm(span=50, adjust=False).mean()
-    data['Trend_up'] = (data['EMA_fast'] > data['EMA_slow']).astype(int)
-    data['ATR'] = compute_atr(data)
-
-    horizon = 4
-    data['Future_return'] = data['Close'].shift(-horizon) / data['Close'] - 1
-    data['Target'] = (data['Future_return'] > 0).astype(int)
-
-    data.dropna(inplace=True)
-    return data
+# EUR/USD üçün tipik spread (broker/vaxtdan asılı olaraq dəyişir - realist qonşuluq)
+SPREAD_PIPS = 1.2
+PIP_VALUE = 0.0001
 
 
 def simulate_trade(data, entry_idx, direction, entry_price, sl, tp, max_bars=48):
@@ -83,19 +49,13 @@ def simulate_trade(data, entry_idx, direction, entry_price, sl, tp, max_bars=48)
     future = data.iloc[entry_idx + 1: entry_idx + 1 + max_bars]
 
     for _, row in future.iterrows():
-        high = row['High']
-        low = row['Low']
-
+        high, low = row['High'], row['Low']
         if direction == 'BUY':
-            hit_sl = low <= sl
-            hit_tp = high >= tp
-        else:  # SELL
-            hit_sl = high >= sl
-            hit_tp = low <= tp
+            hit_sl, hit_tp = low <= sl, high >= tp
+        else:
+            hit_sl, hit_tp = high >= sl, low <= tp
 
         # Eyni bar içində hər ikisi toxunarsa, konservativ yanaşaraq SL prioritetləndirilir
-        if hit_sl and hit_tp:
-            return 'SL', sl - entry_price if direction == 'BUY' else entry_price - sl
         if hit_sl:
             return 'SL', sl - entry_price if direction == 'BUY' else entry_price - sl
         if hit_tp:
@@ -104,59 +64,84 @@ def simulate_trade(data, entry_idx, direction, entry_price, sl, tp, max_bars=48)
     return 'TIMEOUT', 0.0
 
 
+def train_ensemble_for_backtest(train, calib):
+    """market_utils.train_calibrated_ensemble ilə eyni məntiq, sadəcə hazır
+    train/calib bölgüsü qəbul edir ki, test hissəsi üzərində vektorlaşdırılmış
+    (sürətli) proqnoz apara bilək."""
+    rf, gb = market_utils.build_rf(), market_utils.build_gb()
+    rf.fit(train[market_utils.FEATURES], train['Target'])
+    gb.fit(train[market_utils.FEATURES], train['Target'])
+    cal_rf = LogisticRegression().fit(rf.predict_proba(calib[market_utils.FEATURES])[:, 1].reshape(-1, 1), calib['Target'])
+    cal_gb = LogisticRegression().fit(gb.predict_proba(calib[market_utils.FEATURES])[:, 1].reshape(-1, 1), calib['Target'])
+    return rf, gb, cal_rf, cal_gb
+
+
 def run_backtest():
-    print("Data yüklənir və hazırlanır...")
-    data = load_and_prepare()
+    print("Data yüklənir və hazırlanır (canlı botla eyni feature pipeline)...")
+    raw, is_synthetic = market_utils.load_raw_data()
+    if is_synthetic:
+        print("XƏBƏRDARLIQ: yfinance/Frankfurter əlçatan deyil, sintetik data qayıtdı - backtest MƏNASIZDIR, sonra yenidən cəhd et.")
+        return
+    data = market_utils.build_features(raw)
 
-    features = ['Return', 'Range', 'RSI', 'MACD_hist', 'Trend_up']
+    n = len(data)
+    train_end, calib_end = int(n * 0.70), int(n * 0.85)
+    train, calib, test = data.iloc[:train_end], data.iloc[train_end:calib_end], data.iloc[calib_end:]
+    print(f"Train: {len(train)} bar | Kalibrasiya: {len(calib)} bar | Test: {len(test)} bar")
 
-    split_idx = int(len(data) * 0.8)
-    train = data.iloc[:split_idx]
-    test = data.iloc[split_idx:]
+    rf, gb, cal_rf, cal_gb = train_ensemble_for_backtest(train, calib)
 
-    print(f"Train: {len(train)} bar | Test: {len(test)} bar")
+    # Vektorlaşdırılmış proqnoz - bütün test set üçün bir dəfəyə (sürətli)
+    rf_raw_test = rf.predict_proba(test[market_utils.FEATURES])[:, 1]
+    gb_raw_test = gb.predict_proba(test[market_utils.FEATURES])[:, 1]
+    rf_cal_test = cal_rf.predict_proba(rf_raw_test.reshape(-1, 1))[:, 1]
+    gb_cal_test = cal_gb.predict_proba(gb_raw_test.reshape(-1, 1))[:, 1]
+    ensemble_prob = (rf_cal_test + gb_cal_test) / 2
 
-    model = RandomForestClassifier(n_estimators=200, max_depth=5, random_state=42)
-    model.fit(train[features], train['Target'])
+    test_acc = float(accuracy_score(test['Target'], (ensemble_prob > 0.5).astype(int)))
+    print(f"Modelin test dəqiqliyi: {test_acc:.2%}")
 
-    test_acc = accuracy_score(test['Target'], model.predict(test[features]))
-    print(f"Modelin test dəqiqliyi: {test_acc:.2%}\n")
+    if test_acc < bot_config.MIN_TEST_ACC:
+        print(f"Model dəqiqliyi canlı botun MIN_TEST_ACC ({bot_config.MIN_TEST_ACC}) həddindən aşağıdır - "
+              f"canlıda bu model heç siqnal göndərməyəcək.\n")
 
-    BUY_THRESHOLD = 0.62
-    SELL_THRESHOLD = 0.38
+    hist_atr_median = test['ATR'].rolling(50).median()
+    atr_ratio = test['ATR'] / hist_atr_median
+
+    test_reset = test.reset_index()
+    prob_arr, atr_ratio_arr = ensemble_prob, atr_ratio.values
 
     trades = []
-    test_reset = test.reset_index()
-
     for i in range(len(test_reset) - 1):
         row = test_reset.iloc[i]
-        feat_row = pd.DataFrame([row[features].values], columns=features)
-        prob = model.predict_proba(feat_row)[0][1]
+        prob = prob_arr[i]
+        ratio = atr_ratio_arr[i]
+        if np.isnan(ratio) or ratio < bot_config.MIN_ATR_RATIO:
+            continue
 
         trend_up = bool(row['Trend_up'])
-        price = row['Close']
-        atr = row['ATR']
+        price, atr = row['Close'], row['ATR']
 
         direction = None
-        if prob > BUY_THRESHOLD and trend_up:
+        if prob >= bot_config.BUY_THRESHOLD:
             direction = 'BUY'
-            sl = price - 1.5 * atr
-            tp = price + 3.0 * atr
-        elif prob < SELL_THRESHOLD and not trend_up:
+            sl, tp = price - atr * 1.5, price + atr * 2.5
+        elif prob <= bot_config.SELL_THRESHOLD:
             direction = 'SELL'
-            sl = price + 1.5 * atr
-            tp = price - 3.0 * atr
+            sl, tp = price + atr * 1.5, price - atr * 2.5
 
         if direction:
-            outcome, pip_result = simulate_trade(test_reset, i, direction, price, sl, tp)
+            outcome, pip_result_price_units = simulate_trade(test_reset, i, direction, price, sl, tp)
+            pip_result = pip_result_price_units / PIP_VALUE - SPREAD_PIPS  # spread xərci hər girişdə çıxılır
             trades.append({
-                'time': row['Datetime'] if 'Datetime' in row else row.get('index'),
+                'time': row.get('Datetime', row.get('index')),
                 'direction': direction,
                 'entry': price,
                 'sl': sl,
                 'tp': tp,
+                'prob': prob,
                 'outcome': outcome,
-                'result': pip_result,
+                'pips': round(pip_result, 1),
             })
 
     if not trades:
@@ -170,21 +155,21 @@ def run_backtest():
     timeouts = (trades_df['outcome'] == 'TIMEOUT').sum()
 
     win_rate = wins / total if total > 0 else 0
-    total_result = trades_df['result'].sum()
+    total_pips = trades_df['pips'].sum()
 
-    gross_win = trades_df.loc[trades_df['result'] > 0, 'result'].sum()
-    gross_loss = -trades_df.loc[trades_df['result'] < 0, 'result'].sum()
+    gross_win = trades_df.loc[trades_df['pips'] > 0, 'pips'].sum()
+    gross_loss = -trades_df.loc[trades_df['pips'] < 0, 'pips'].sum()
     profit_factor = gross_win / gross_loss if gross_loss > 0 else float('inf')
 
-    print("===== BACKTEST NƏTİCƏLƏRİ =====")
-    print(f"Ümumi siqnal sayı : {total}")
-    print(f"Uğurlu (TP)        : {wins}")
-    print(f"Uğursuz (SL)        : {losses}")
-    print(f"Timeout (nə SL nə TP): {timeouts}")
-    print(f"Win rate            : {win_rate:.1%}")
-    print(f"Profit factor       : {profit_factor:.2f}")
-    print(f"Məcmu nəticə (qiymət vahidi): {total_result:.5f}")
-    print("================================")
+    print("\n===== BACKTEST NƏTİCƏLƏRİ (spread daxil, ~1 dəfə öyrədilmiş model) =====")
+    print(f"Ümumi siqnal sayı     : {total}")
+    print(f"Uğurlu (TP)           : {wins}")
+    print(f"Uğursuz (SL)          : {losses}")
+    print(f"Timeout (nə SL nə TP) : {timeouts}")
+    print(f"Win rate              : {win_rate:.1%}")
+    print(f"Profit factor         : {profit_factor:.2f}")
+    print(f"Məcmu nəticə (pip, spread çıxılmış): {total_pips:.1f}")
+    print("=========================================================================")
 
     trades_df.to_csv('backtest_results.csv', index=False)
     print("\nDetallı nəticələr backtest_results.csv faylına yazıldı.")
