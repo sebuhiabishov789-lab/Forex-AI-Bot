@@ -111,6 +111,13 @@ def main():
         logger.error("Data alınmadı")
         return
 
+    # === BURASI YENİ - TELEGRAM A İÇİN CACHE HER DURUMDA KAYDEDİLSİN ===
+    try:
+        market_utils._save_last_status(status)
+        logger.info(f"last_status.json kaydedildi: {status.get('current_price')}")
+    except Exception as e:
+        logger.error(f"Cache kayıt hatası: {e}")
+
     prob = status['prob']
     test_acc = status['test_acc']
     price = status['current_price']
