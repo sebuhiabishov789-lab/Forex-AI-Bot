@@ -9,6 +9,7 @@ import numpy as np
 import json
 import os
 import logging
+import joblib
 from datetime import datetime, timezone, timedelta
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
@@ -27,9 +28,15 @@ FEATURES = [
     'ADX', 'BB_width', 'Session', 'ATR_ratio'
 ]
 
+# ~1.5 pip - tipik EUR/USD spreadindən (~1-1.5 pip) bir az yuxarı, ona görə
+# model spread xərcini örtməyən "uğurlu" hərəkətləri target kimi öyrənmir.
+TARGET_MOVE_THRESHOLD = 0.00015
+
 TUNED_PARAMS_FILE = "tuned_params.json"
 TUNE_EVERY_HOURS = 24
 LAST_STATUS_FILE = "last_status.json"
+MODEL_CACHE_FILE = "model_cache.pkl"
+MODEL_RETRAIN_EVERY_HOURS = float(os.environ.get('MODEL_RETRAIN_EVERY_HOURS', '6'))
 
 # --- Indiqatorlar ---
 def compute_rsi(close, period=14):
@@ -73,6 +80,9 @@ def compute_bollinger_width(close, period=20, nbdev=2):
     return ((sma + nbdev*std) - (sma - nbdev*std)) / sma.replace(0, np.nan)
 
 def load_raw_data():
+    """Returns (DataFrame, is_synthetic: bool). is_synthetic=True mənası: bu data
+    real bazar datası DEYİL, yalnız fallback üçün uydurulmuş random-walk-dır və
+    ONUN ÜZƏRİNDƏ TİCARƏT SİQNALI GÖNDƏRİLMƏMƏLİDİR."""
     # 1. Önce yfinance dene
     for days in [90, 60, 45]:
         try:
@@ -83,17 +93,19 @@ def load_raw_data():
                 data.index = data.index.tz_localize(None)
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
-            return data
-        except:
+            return data, False
+        except Exception as e:
+            logger.warning(f"yfinance cəhdi uğursuz ({days}d): {e}")
             continue
 
     # 2. Yahoo ban yediyse - Frankfurter'den son fiyatı al
-    logger.warning("yfinance ban yedi, Frankfurter fallback devrede")
+    logger.warning("yfinance ban yedi, Frankfurter fallback devrede - BU SİNTETİK DATADIR")
     try:
         import requests
         r = requests.get("https://api.frankfurter.app/latest?from=EUR&to=USD", timeout=10).json()
         price = float(r['rates']['USD'])
-    except:
+    except Exception as e:
+        logger.warning(f"Frankfurter fallback da uğursuz: {e}")
         # O da olmazsa son cache'den al
         cache = _load_last_status()
         price = cache['current_price'] if cache and 'current_price' in cache else 1.08
@@ -108,7 +120,7 @@ def load_raw_data():
         'Close': close,
         'Volume': 1000
     }, index=idx)
-    return df
+    return df, True
 
 def get_market_session_vectorized(index):
     hours = index.hour
@@ -163,7 +175,9 @@ def get_trend_label(data, rule, min_bars=55):
         ema_f = tf['Close'].ewm(span=20, adjust=False).mean()
         ema_s = tf['Close'].ewm(span=50, adjust=False).mean()
         return "Yuxari" if ema_f.iloc[-1] > ema_s.iloc[-1] else "Asagi"
-    except: return "N/A"
+    except Exception as e:
+        logger.warning(f"Trend label hesablanmadı ({rule}): {e}")
+        return "N/A"
 
 def get_multi_timeframe_trends(data):
     tfs = {"15 deq":"15min","30 deq":"30min","1 saat":"1h","4 saat":"4h","1 gun":"1D"}
@@ -189,7 +203,11 @@ def build_features(data):
     df['Session'] = get_market_session_vectorized(df.index)
     df['ATR_ratio'] = df['ATR'] / df['ATR'].rolling(50).median().replace(0, np.nan)
     df['Future_return'] = df['Close'].shift(-4) / df['Close'] - 1
-    df['Target'] = (df['Future_return'] > 0.00005).astype(int)
+    # Əvvəlki hədd (0.00005 ~ 0.5 pip) tipik spreaddən (~1-1.5 pip) kiçik idi - model
+    # praktik olaraq gürültünü (noise) öyrənə bilirdi. TARGET_MOVE_THRESHOLD indi
+    # tipik spread + kiçik marja səviyyəsindədir ki, "uğurlu" kimi etiketlənən
+    # hərəkət real ticarət xərcini örtsün.
+    df['Target'] = (df['Future_return'] > TARGET_MOVE_THRESHOLD).astype(int)
     df.dropna(inplace=True)
     return df
 
@@ -211,7 +229,8 @@ def load_tuned_params():
         ts = datetime.fromisoformat(j.get('timestamp','2000-01-01T00:00:00'))
         if datetime.now(timezone.utc) - ts < timedelta(hours=TUNE_EVERY_HOURS):
             return j.get('rf_params',{}), j.get('gb_params',{})
-    except: pass
+    except Exception as e:
+        logger.warning(f"Tuned params oxunmadı: {e}")
     return {}, {}
 
 def train_calibrated_ensemble(hist):
@@ -230,6 +249,35 @@ def train_calibrated_ensemble(hist):
     acc = float(accuracy_score(test['Target'], (ensemble>0.5).astype(int)))
     return {'rf':rf,'gb':gb,'calibrator_rf':cal_rf,'calibrator_gb':cal_gb,'test_acc':acc}
 
+def _load_model_cache():
+    if not os.path.isfile(MODEL_CACHE_FILE):
+        return None
+    try:
+        cached = joblib.load(MODEL_CACHE_FILE)
+        ts = datetime.fromisoformat(cached.get('timestamp', '2000-01-01T00:00:00+00:00'))
+        if datetime.now(timezone.utc) - ts < timedelta(hours=MODEL_RETRAIN_EVERY_HOURS):
+            return cached['models']
+    except Exception as e:
+        logger.warning(f"Model cache oxunmadı: {e}")
+    return None
+
+def _save_model_cache(models):
+    try:
+        joblib.dump({'timestamp': datetime.now(timezone.utc).isoformat(), 'models': models}, MODEL_CACHE_FILE)
+    except Exception as e:
+        logger.warning(f"Model cache yazılmadı: {e}")
+
+def get_or_train_ensemble(hist):
+    """Modeli hər run-da sıfırdan öyrətmək əvəzinə MODEL_RETRAIN_EVERY_HOURS ərzində
+    öncəki öyrədilmiş modeli təkrar istifadə edir - həm hesablama xərcini, həm də
+    run-lar arası nəticə qeyri-sabitliyini azaldır."""
+    cached = _load_model_cache()
+    if cached is not None:
+        return cached
+    models = train_calibrated_ensemble(hist)
+    _save_model_cache(models)
+    return models
+
 def predict_ensemble(models, live_row):
     rf_raw = models['rf'].predict_proba(live_row)[0][1]
     gb_raw = models['gb'].predict_proba(live_row)[0][1]
@@ -246,24 +294,26 @@ def _save_last_status(st):
             'gb_prob': st.get('gb_prob'),
             'trend_up': st.get('trend_up'),
             'test_acc': st.get('test_acc'),
+            'is_synthetic': st.get('is_synthetic', False),
             'time': datetime.now(timezone.utc).isoformat()
         }
         with open(LAST_STATUS_FILE,"w") as f:
             json.dump(slim,f)
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"last_status.json yazılmadı: {e}")
 
 def _load_last_status():
     if os.path.isfile(LAST_STATUS_FILE):
         try:
             with open(LAST_STATUS_FILE,"r") as f:
                 return json.load(f)
-        except:
+        except Exception as e:
+            logger.warning(f"last_status.json oxunmadı: {e}")
             return None
     return None
 
 def _get_live_status():
-    raw = load_raw_data()
+    raw, is_synthetic = load_raw_data()
     if raw is None or len(raw) < 200:
         return None
     data = build_features(raw)
@@ -271,7 +321,7 @@ def _get_live_status():
         return None
     live_row = data[FEATURES].iloc[[-1]]
     hist = data.iloc[:-1]
-    models = train_calibrated_ensemble(hist)
+    models = get_or_train_ensemble(hist)
     pred = predict_ensemble(models, live_row)
     return {
         'data': data,
@@ -288,6 +338,7 @@ def _get_live_status():
         'support': detect_support_resistance(data)[0],
         'resistance': detect_support_resistance(data)[1],
         'pattern': detect_pattern(data),
+        'is_synthetic': is_synthetic,
     }
 
 def get_current_status():
