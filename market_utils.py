@@ -2,38 +2,40 @@
 market_utils.py — bot.py və status_check.py tərəfindən paylaşılan ortaq funksiyalar.
 Data yükləmə, indiqator hesablamaları, kalibrasiya olunmuş ensemble model
 (RandomForest + GradientBoosting), çoxlu zaman dilimi trend hesabatı, trend
-xətti (trendline), support/resistance və sadə həndəsi fiqur tanıma
-(double top/bottom, triangle) burada cəmlənib ki, kod təkrarlanmasın.
+xətti (trendline), support/resistance, sadə həndəsi fiqur tanıma,
+yeni əlavələr: ADX, Bollinger Bant genişliyi, sessiya, xəbər qadağası,
+ATR nisbəti, hiperparametr tuning (RandomizedSearchCV, gündə bir dəfə),
+və təkmilləşmiş target tərifi.
 
---- Model arxitekturası ---
-Tək model əvəzinə İKİ fərqli model (RandomForest + GradientBoosting) paralel
-öyrədilir. Hər ikisinin "xam" ehtimalı ayrıca Platt scaling (logistic
-regression əsaslı kalibrasiya) ilə düzəldilir ki, "70% ehtimal" dediyimiz
-zaman bu, statistik olaraq daha etibarlı olsun. Sonra iki kalibrə olunmuş
-ehtimalın ortalaması götürülür (ensemble) — fərqli modellər fərqli səhvlər
-etdiyi üçün ortalama daha stabildir.
-
-Data xronoloji olaraq 3 hissəyə bölünür (sızma/leakage olmasın deyə):
-  - train (70%)  → əsas modellər (RF, GB) bu hissədə öyrədilir
-  - calib (15%)  → kalibratorlar (Platt scaling) bu hissədə öyrədilir
-  - test  (15%)  → yekun dəqiqlik (test_acc) bu hissədə ölçülür
 """
 
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import json
+import os
+from datetime import datetime, timezone, timedelta
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 
+# Yeni iqtisadi təqvim funksiyasını import edirik
+import economic_calendar
+
+# Parametrlər
 FEATURES = [
     'Return', 'Range', 'RSI', 'MACD_hist', 'Trend_up',
     'Trend_slope', 'Dist_to_trendline', 'Body_ratio',
+    'ADX', 'BB_width', 'Session', 'News_blackout', 'ATR_ratio'
 ]
+
+TUNED_PARAMS_FILE = "tuned_params.json"
+TUNE_EVERY_HOURS = 24  # hər 24 saatdan bir yenidən tuning ediləcək
 
 
 # ---------------------------------------------------------------------------
-# Klassik indiqatorlar
+# Klassik indiqatorlar (yeniləri ilə birlikdə)
 # ---------------------------------------------------------------------------
 
 def compute_rsi(close, period=14):
@@ -63,13 +65,39 @@ def compute_atr(data, period=14):
     return tr.rolling(period).mean()
 
 
+def compute_adx(data, period=14):
+    """Average Directional Index — trend gücünü ölçür."""
+    high = data['High']
+    low = data['Low']
+    close = data['Close']
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=data.index)
+    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=data.index)
+    atr = compute_atr(data, period)
+    plus_di = 100 * (plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
+    minus_di = 100 * (minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+    adx = dx.ewm(alpha=1/period, adjust=False).mean()
+    return adx.fillna(20)
+
+
+def compute_bollinger_bands(close, period=20, nbdev=2):
+    """Bollinger Bant genişliyi (volatillik ölçüsü)."""
+    sma = close.rolling(period).mean()
+    std = close.rolling(period).std()
+    upper = sma + nbdev * std
+    lower = sma - nbdev * std
+    bb_width = (upper - lower) / sma  # nisbi genişlik
+    return bb_width.fillna(0)
+
+
 def resample_ohlc(data, rule):
     agg = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}
     return data.resample(rule).agg(agg).dropna()
 
 
 def get_trend_label(data, rule, ema_fast=20, ema_slow=50, min_bars=55):
-    """Verilən timeframe-ə resample edir və EMA20/EMA50 əsasında trend istiqamətini qaytarır."""
     tf_data = resample_ohlc(data, rule)
     if len(tf_data) < min_bars:
         return "Data kifayət deyil"
@@ -80,7 +108,6 @@ def get_trend_label(data, rule, ema_fast=20, ema_slow=50, min_bars=55):
 
 
 def get_multi_timeframe_trends(data):
-    """15dəq, 30dəq, 1saat, 4saat, 1gün üçün trend istiqamətlərini qaytarır."""
     timeframes = {
         "15 dəq": "15min",
         "30 dəq": "30min",
@@ -106,7 +133,6 @@ def format_trends_block(trends):
 
 
 def count_aligned_timeframes(trends, direction_up):
-    """Neçə zaman diliminin BUY (yuxarı) və ya SELL (aşağı) istiqaməti ilə üst-üstə düşdüyünü sayır."""
     target = "🟢 Yuxarı" if direction_up else "🔴 Aşağı"
     return sum(1 for v in trends.values() if v == target)
 
@@ -116,7 +142,6 @@ def count_aligned_timeframes(trends, direction_up):
 # ---------------------------------------------------------------------------
 
 def find_pivots(data, window=5):
-    """Local maksimum/minimum (pivot high/low) nöqtələrini tapır."""
     highs = data['High']
     lows = data['Low']
     pivot_high = (highs == highs.rolling(window * 2 + 1, center=True).max())
@@ -125,17 +150,11 @@ def find_pivots(data, window=5):
 
 
 def compute_trendline(data, pivot_mask, lookback=50):
-    """
-    Son `lookback` bar içindəki pivot nöqtələr üzərindən xətti reqressiya
-    ilə trend xəttinin meylini (slope) və cari nöqtədəki qiymətini qaytarır.
-    """
     recent = data.iloc[-lookback:]
     mask = pivot_mask.iloc[-lookback:]
     pts = recent.loc[mask, 'Close']
-
     if len(pts) < 2:
-        return 0.0, None  # kifayət qədər pivot yoxdur
-
+        return 0.0, None
     x = np.arange(len(pts))
     y = pts.values
     slope, intercept = np.polyfit(x, y, 1)
@@ -144,82 +163,84 @@ def compute_trendline(data, pivot_mask, lookback=50):
 
 
 def detect_support_resistance(data, window=20):
-    """
-    Son barlarda qiymətin ən çox toxunduğu pivot nöqtələri
-    support/resistance kimi qaytarır (cari qiymətə ən yaxın olanlar).
-    """
     recent = data.iloc[-window * 3:]
     ph, pl = find_pivots(recent, window=3)
-
     levels = pd.concat([recent.loc[ph, 'High'], recent.loc[pl, 'Low']])
     if levels.empty:
         return None, None
-
     current_price = data['Close'].iloc[-1]
     below = levels[levels < current_price]
     above = levels[levels > current_price]
-
     support = float(below.max()) if not below.empty else None
     resistance = float(above.min()) if not above.empty else None
     return support, resistance
 
 
 def detect_pattern(data, window=5, lookback=60, tolerance=0.002):
-    """
-    Sadələşdirilmiş fiqur tanıma:
-    - Double Top: iki bənzər hündürlük pivotu
-    - Double Bottom: iki bənzər aşağı pivot
-    - Triangle (converging): pivot high-lar enir, pivot low-lar qalxır
-    """
     recent = data.iloc[-lookback:]
     ph, pl = find_pivots(recent, window=window)
-
     highs = recent.loc[ph, 'High']
     lows = recent.loc[pl, 'Low']
-
     pattern = "Yoxdur"
-
     if len(highs) >= 2:
         last_two_highs = highs.iloc[-2:]
         if abs(last_two_highs.iloc[0] - last_two_highs.iloc[1]) / last_two_highs.iloc[0] < tolerance:
             pattern = "Double Top"
-
     if len(lows) >= 2:
         last_two_lows = lows.iloc[-2:]
         if abs(last_two_lows.iloc[0] - last_two_lows.iloc[1]) / last_two_lows.iloc[0] < tolerance:
             pattern = "Double Bottom" if pattern == "Yoxdur" else pattern + " / Double Bottom"
-
     if len(highs) >= 2 and len(lows) >= 2:
         high_slope = np.polyfit(np.arange(len(highs)), highs.values, 1)[0]
         low_slope = np.polyfit(np.arange(len(lows)), lows.values, 1)[0]
         if high_slope < 0 and low_slope > 0:
             pattern = "Triangle (converging)"
-
     return pattern
 
 
 # ---------------------------------------------------------------------------
-# Data yükləmə və feature mühəndisliyi
+# Data yükləmə (daha çox data cəhdi)
 # ---------------------------------------------------------------------------
 
 def load_raw_data():
-    """EUR/USD 15 dəqiqəlik datanı yfinance-dən yükləyir və təmizləyir."""
-    data = yf.download('EURUSD=X', period='60d', interval='15m', auto_adjust=True)
+    """EUR/USD 15 dəqiqəlik datanı yfinance-dən yükləyir. Daha çox data almağa çalışır."""
+    for period_days in [90, 60, 45]:  # Ən çox 90 gün, yoxsa 60, 45
+        try:
+            data = yf.download('EURUSD=X', period=f'{period_days}d', interval='15m', auto_adjust=True)
+            if data is not None and not data.empty and len(data) >= 200:
+                if data.index.tz is not None:
+                    data.index = data.index.tz_localize(None)
+                if isinstance(data.columns, pd.MultiIndex):
+                    data.columns = data.columns.get_level_values(0)
+                print(f"{period_days} günlük data yükləndi: {len(data)} bar")
+                return data
+        except Exception as e:
+            print(f"{period_days} gün data yükləmə alınmadı: {e}")
+            continue
+    return None
 
-    if data is None or data.empty or len(data) < 200:
-        return None
 
-    if data.index.tz is not None:
-        data.index = data.index.tz_localize(None)
+# ---------------------------------------------------------------------------
+# Sessiya təyini
+# ---------------------------------------------------------------------------
 
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
+def get_market_session_utc(utc_hour):
+    """UTC saatına görə əsas bazar sessiyasını rəqəmsəlləşdirir."""
+    if 7 <= utc_hour < 16:
+        return 1  # London
+    elif 13 <= utc_hour < 21:
+        return 2  # Nyu-York (Londonla kəsişmə ola bilər, amma biz əsasən London>NY üstünlüyü veririk)
+    elif 0 <= utc_hour < 9:
+        return 0  # Asiya
+    else:
+        return 3  # Qarışıq/digər
 
-    return data
 
+# ---------------------------------------------------------------------------
+# Feature mühəndisliyi (təkmilləşmiş)
+# ---------------------------------------------------------------------------
 
 def build_features(data):
-    """Feature-ları hesablayır və Target sütununu əlavə edir (öyrətmə üçün)."""
     data = data.copy()
     data['Return'] = data['Close'].pct_change()
     data['Range'] = (data['High'] - data['Low']) / data['Close']
@@ -230,11 +251,11 @@ def build_features(data):
     data['Trend_up'] = (data['EMA_fast'] > data['EMA_slow']).astype(int)
     data['ATR'] = compute_atr(data)
 
-    # Şam gövdəsinin range-ə nisbəti — güclü/zəif hərəkəti ayırd edir
+    # Şam gövdəsinin nisbəti
     candle_range = (data['High'] - data['Low']).replace(0, np.nan)
     data['Body_ratio'] = ((data['Close'] - data['Open']).abs() / candle_range).fillna(0)
 
-    # --- Trend xətti (trendline) əsaslı feature-lar ---
+    # Trend xətti əsaslı feature-lar
     ph, _pl = find_pivots(data, window=5)
     slope, trendline_val = compute_trendline(data, ph, lookback=50)
     data['Trend_slope'] = slope
@@ -242,39 +263,70 @@ def build_features(data):
         (data['Close'] - trendline_val) / data['Close'] if trendline_val else 0.0
     )
 
-    horizon = 4  # ≈1 saat irəli (4 x 15dəq)
+    # --- Yeni əlavə olunan feature-lar ---
+    # ADX (trend gücü)
+    data['ADX'] = compute_adx(data)
+
+    # Bollinger Bant genişliyi (volatillik)
+    data['BB_width'] = compute_bollinger_bands(data['Close'])
+
+    # Sessiya (0-3 arası rəqəm)
+    data['Session'] = data.index.map(lambda ts: get_market_session_utc(ts.hour))
+
+    # ATR nisbəti: cari ATR / son 50 bar ATR medianı
+    atr_median = data['ATR'].rolling(50).median()
+    data['ATR_ratio'] = data['ATR'] / atr_median.replace(0, np.nan)
+
+    # Xəbər qadağası: cari bar zamanı blackout pəncərəsindədir?
+    # Hər sətir üçün hesablayırıq (bir az ağır ola bilər, lakin sadədir).
+    # Qeyd: economic_calendar.check_news_blackout() cari UTC vaxtına baxır.
+    # Biz isə tarixi sətirlər üçün onu işlədə bilmərik. Bunun əvəzinə
+    # "yaxın vaxtda yüksək təsirli xəbər var?" məlumatını sadə şəkildə verəcəyik:
+    # son 1 saat ərzində yüksək xəbər oldu/qarşıdakı 1 saatda olacaq?
+    # Sadəlik üçün bu feature-u hər sətirdə 0 qoyub, yalnız canlı sətirdə
+    # dinamik dolduracağıq. Canlı proqnozda istifadə edəcəyik, tarixi
+    # öyrənmədə 0 olaraq qalacaq (çünki tarixi xəbər datasına ehtiyac var).
+    data['News_blackout'] = 0
+
+    # Target: 1 saat sonra (4 bar) ən azı 0.5 pip (0.00005) qazanc
+    horizon = 4
     data['Future_return'] = data['Close'].shift(-horizon) / data['Close'] - 1
-    data['Target'] = (data['Future_return'] > 0).astype(int)
+    data['Target'] = (data['Future_return'] > 0.00005).astype(int)
 
     data.dropna(inplace=True)
     return data
 
 
 # ---------------------------------------------------------------------------
-# Kalibrasiya olunmuş ensemble model
+# Kalibrasiya olunmuş ensemble model (təkmilləşmiş)
 # ---------------------------------------------------------------------------
 
-def build_rf():
-    return RandomForestClassifier(
-        n_estimators=250,
-        max_depth=6,
-        min_samples_leaf=10,
-        class_weight='balanced',
-        random_state=42,
-    )
+def build_rf(params=None):
+    default = {
+        'n_estimators': 250,
+        'max_depth': 6,
+        'min_samples_leaf': 10,
+        'class_weight': 'balanced',
+        'random_state': 42,
+    }
+    if params:
+        default.update(params)
+    return RandomForestClassifier(**default)
 
 
-def build_gb():
-    return GradientBoostingClassifier(
-        n_estimators=150,
-        max_depth=3,
-        learning_rate=0.05,
-        random_state=42,
-    )
+def build_gb(params=None):
+    default = {
+        'n_estimators': 150,
+        'max_depth': 3,
+        'learning_rate': 0.05,
+        'random_state': 42,
+    }
+    if params:
+        default.update(params)
+    return GradientBoostingClassifier(**default)
 
 
 def fit_platt_calibrator(raw_probs, y_true):
-    """Xam ehtimalları real ehtimala yaxınlaşdırmaq üçün logistic regression (Platt scaling) öyrədir."""
     lr = LogisticRegression()
     lr.fit(raw_probs.reshape(-1, 1), y_true)
     return lr
@@ -285,23 +337,18 @@ def apply_calibrator(calibrator, raw_prob):
 
 
 def train_calibrated_ensemble(hist):
-    """
-    Datanı xronoloji olaraq train/calib/test hissələrinə bölür, hər iki modeli
-    (RF, GB) train hissəsində öyrədir, kalibratorları calib hissəsində qurur,
-    test hissəsində yekun (kalibrə olunmuş, ensemble) dəqiqliyi ölçür.
-
-    Qaytarır: dict — rf, gb, calibrator_rf, calibrator_gb, test_acc
-    """
     n = len(hist)
     train_end = int(n * 0.70)
     calib_end = int(n * 0.85)
-
     train = hist.iloc[:train_end]
     calib = hist.iloc[train_end:calib_end]
     test = hist.iloc[calib_end:]
 
-    rf = build_rf()
-    gb = build_gb()
+    # Hiperparametrləri yüklə (əgər tuning edilibsə)
+    tuned_rf, tuned_gb = load_tuned_params()
+
+    rf = build_rf(tuned_rf)
+    gb = build_gb(tuned_gb)
     rf.fit(train[FEATURES], train['Target'])
     gb.fit(train[FEATURES], train['Target'])
 
@@ -310,7 +357,7 @@ def train_calibrated_ensemble(hist):
     calibrator_rf = fit_platt_calibrator(raw_rf_calib, calib['Target'].values)
     calibrator_gb = fit_platt_calibrator(raw_gb_calib, calib['Target'].values)
 
-    # Yekun dəqiqliyi test hissəsində ölç (həm RF, həm GB kalibrə olunub, ortalanır)
+    # Test dəqiqliyi
     raw_rf_test = rf.predict_proba(test[FEATURES])[:, 1]
     raw_gb_test = gb.predict_proba(test[FEATURES])[:, 1]
     cal_rf_test = calibrator_rf.predict_proba(raw_rf_test.reshape(-1, 1))[:, 1]
@@ -329,20 +376,13 @@ def train_calibrated_ensemble(hist):
 
 
 def predict_ensemble(models, live_row):
-    """
-    Canlı sətir üçün hər iki modelin kalibrə olunmuş ehtimalını hesablayır,
-    ortalamanı (ensemble ehtimalı) və modellərin razılaşma dərəcəsini qaytarır.
-    """
     raw_rf = models['rf'].predict_proba(live_row)[0][1]
     raw_gb = models['gb'].predict_proba(live_row)[0][1]
     cal_rf = apply_calibrator(models['calibrator_rf'], raw_rf)
     cal_gb = apply_calibrator(models['calibrator_gb'], raw_gb)
     ensemble_prob = (cal_rf + cal_gb) / 2
-
-    # Modellərin nə qədər razılaşdığı: hər ikisi eyni istiqamətə (0.5-dən eyni tərəfə) işarə edirmi?
     same_direction = (cal_rf > 0.5) == (cal_gb > 0.5)
     agreement = 1.0 if same_direction else 0.0
-
     return {
         'prob': ensemble_prob,
         'rf_prob': cal_rf,
@@ -351,14 +391,80 @@ def predict_ensemble(models, live_row):
     }
 
 
-def get_current_status():
-    """
-    Tam status hesablamasını edir: data yükləmə, feature-lar, kalibrasiya
-    olunmuş ensemble model öyrətmə, canlı proqnoz, çoxlu zaman dilimi
-    trendlər, support/resistance və fiqur.
+# ---------------------------------------------------------------------------
+# Hiperparametr tuning (gündə bir dəfə)
+# ---------------------------------------------------------------------------
 
-    Qaytarır: dict və ya None (data kifayət deyilsə).
-    """
+def load_tuned_params():
+    """Əgər son 24 saatda tuning edilmiş parametrlər varsa, onları qaytarır."""
+    if not os.path.isfile(TUNED_PARAMS_FILE):
+        return {}, {}
+    try:
+        with open(TUNED_PARAMS_FILE, 'r') as f:
+            data = json.load(f)
+        timestamp = datetime.fromisoformat(data.get('timestamp', '2000-01-01T00:00:00'))
+        if datetime.now(timezone.utc) - timestamp < timedelta(hours=TUNE_EVERY_HOURS):
+            return data.get('rf_params', {}), data.get('gb_params', {})
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}, {}
+
+
+def save_tuned_params(rf_params, gb_params):
+    with open(TUNED_PARAMS_FILE, 'w') as f:
+        json.dump({
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'rf_params': rf_params,
+            'gb_params': gb_params
+        }, f)
+
+
+def tune_hyperparams(data):
+    """Son 20% data üzərində RandomizedSearchCV ilə hiperparametr axtarışı."""
+    # Data çox böyükdürsə, son 2000 bar ilə məhdudlaşdıraq
+    n = len(data)
+    start = max(0, n - 2000)
+    tune_data = data.iloc[start:]
+    X = tune_data[FEATURES]
+    y = tune_data['Target']
+
+    tscv = TimeSeriesSplit(n_splits=3)
+    # RF param grid
+    rf_grid = {
+        'n_estimators': [150, 250, 350],
+        'max_depth': [4, 6, 8],
+        'min_samples_leaf': [5, 10, 20],
+    }
+    gb_grid = {
+        'n_estimators': [100, 150, 200],
+        'max_depth': [3, 4, 5],
+        'learning_rate': [0.03, 0.05, 0.1],
+    }
+
+    rf = RandomForestClassifier(class_weight='balanced', random_state=42)
+    gb = GradientBoostingClassifier(random_state=42)
+
+    rf_search = RandomizedSearchCV(rf, rf_grid, n_iter=10, cv=tscv, scoring='accuracy', random_state=42, n_jobs=-1)
+    gb_search = RandomizedSearchCV(gb, gb_grid, n_iter=10, cv=tscv, scoring='accuracy', random_state=42, n_jobs=-1)
+
+    print("Hiperparametr axtarışı başladı...")
+    try:
+        rf_search.fit(X, y)
+        gb_search.fit(X, y)
+        best_rf = rf_search.best_params_
+        best_gb = gb_search.best_params_
+        print(f"RF ən yaxşı: {best_rf}, dəqiqlik: {rf_search.best_score_:.4f}")
+        print(f"GB ən yaxşı: {best_gb}, dəqiqlik: {gb_search.best_score_:.4f}")
+        save_tuned_params(best_rf, best_gb)
+    except Exception as e:
+        print(f"Tuning xətası: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Canlı status
+# ---------------------------------------------------------------------------
+
+def get_current_status():
     raw = load_raw_data()
     if raw is None:
         return None
@@ -367,8 +473,29 @@ def get_current_status():
     if len(data) < 200:
         return None
 
+    # Canlı sətirdə xəbər qadağası feature-unu düzəlt
+    is_blackout, _, _ = economic_calendar.check_news_blackout()
+    data.loc[data.index[-1], 'News_blackout'] = 1 if is_blackout else 0
+
     live_row = data[FEATURES].iloc[[-1]]
-    hist = data.iloc[:-1]
+    hist = data.iloc[:-1]  # canlıdan əvvəlki bütün sətirlər
+
+    # Hiperparametr tuning — lazım olduqda
+    _, _ = load_tuned_params()  # Əgər parametrlər yoxdursa/köhnədirsə, tuning et
+    # Yoxlayırıq: yalnız fayl yoxdursa və ya köhnədirsə tuning işə düşsün
+    if not os.path.isfile(TUNED_PARAMS_FILE):
+        tune_hyperparams(hist)
+    else:
+        # Fayl varsa, tarixçəni yoxla
+        try:
+            with open(TUNED_PARAMS_FILE, 'r') as f:
+                ts_str = json.load(f).get('timestamp', '')
+            if ts_str:
+                last_tune = datetime.fromisoformat(ts_str)
+                if datetime.now(timezone.utc) - last_tune > timedelta(hours=TUNE_EVERY_HOURS):
+                    tune_hyperparams(hist)
+        except:
+            tune_hyperparams(hist)
 
     models = train_calibrated_ensemble(hist)
     prediction = predict_ensemble(models, live_row)
