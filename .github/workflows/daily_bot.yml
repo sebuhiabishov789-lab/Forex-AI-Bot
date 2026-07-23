@@ -10,6 +10,14 @@ on:
 permissions:
   contents: write
 
+# İki workflow (bu və Telegram Status Check) eyni fayllara push edir.
+# Paralel run-lar eyni anda push etməyə çalışanda "non-fast-forward" xətası
+# yaranırdı. Bu concurrency qrupu ilə eyni adlı run-lar növbəyə düzülür,
+# eyni anda işləmir — beləliklə push konflikti aradan qalxır.
+concurrency:
+  group: forex-bot-repo-write
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -59,7 +67,22 @@ jobs:
           # Dəyişiklik varsa commit et və push et
           if [[ -n $(git status --porcelain) ]]; then
             git commit -m "Update signal logs, state, and offset"
-            git push origin main
+
+            # Push zamanı digər paralel run push etmiş ola bilər — belə halda
+            # rebase edib yenidən cəhd edirik (maks. 5 dəfə).
+            push_ok=false
+            for i in 1 2 3 4 5; do
+              if git pull --rebase origin main && git push origin main; then
+                push_ok=true
+                break
+              fi
+              echo "Push uğursuz oldu (cəhd $i/5), 5 saniyə sonra yenidən cəhd ediləcək..."
+              sleep 5
+            done
+
+            if [ "$push_ok" != "true" ]; then
+              echo "::warning::5 cəhddən sonra push uğursuz oldu, state faylları bu run-da yenilənmədi."
+            fi
           else
             echo "Heç bir yeni dəyişiklik yoxdur."
           fi
