@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 OFFSET_FILE = Path("telegram_offset.txt")
-TRIGGER_WORD = "indi"
+TRIGGER_WORD = "A"
 LOG_FILE = Path("signals_log.csv")
 
 def get_saved_offset():
