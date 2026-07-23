@@ -7,6 +7,13 @@ on:
     types: [telegram-check]   # cron-job.org bunu tetikləyəcək
 permissions:
   contents: write
+
+# daily_bot.yml ilə EYNI qrup adı — hər iki workflow eyni fayllara (main
+# branch) push etdiyi üçün, ikisi arasında da növbələşmə lazımdır.
+concurrency:
+  group: forex-bot-repo-write
+  cancel-in-progress: false
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -30,8 +37,22 @@ jobs:
           git config --global user.email "actions@github.com"
           if [ -f telegram_offset.txt ]; then
             git add telegram_offset.txt
-            git commit -m "Update telegram offset" || echo "Dəyişiklik yoxdur"
-            git push
+            if git commit -m "Update telegram offset"; then
+              push_ok=false
+              for i in 1 2 3 4 5; do
+                if git pull --rebase origin main && git push origin main; then
+                  push_ok=true
+                  break
+                fi
+                echo "Push uğursuz oldu (cəhd $i/5), 5 saniyə sonra yenidən cəhd ediləcək..."
+                sleep 5
+              done
+              if [ "$push_ok" != "true" ]; then
+                echo "::warning::5 cəhddən sonra push uğursuz oldu, offset bu run-da yenilənmədi."
+              fi
+            else
+              echo "Dəyişiklik yoxdur."
+            fi
           else
             echo "telegram_offset.txt tapılmadı, commit edilmədi."
           fi
