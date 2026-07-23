@@ -2,8 +2,11 @@ name: Outcome Tracker
 
 on:
   schedule:
-    - cron: '*/15 * * * *'   # hər 15 dəqiqə
-  workflow_dispatch:          # manual başlatma imkanı
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write          # repo-ya push etmək icazəsi
 
 jobs:
   track:
@@ -11,6 +14,8 @@ jobs:
     steps:
       - name: Reponu klonla
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Python qur
         uses: actions/setup-python@v5
@@ -29,4 +34,5 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add signals_log.csv
           git diff --staged --quiet || git commit -m "Siqnal nəticələri yeniləndi"
+          git pull --rebase
           git push
