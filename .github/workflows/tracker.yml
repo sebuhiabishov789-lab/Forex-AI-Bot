@@ -2,7 +2,7 @@ name: Outcome Tracker
 
 on:
   schedule:
-    - cron: '*/15 * * * *'   # hər 15 dəqiqə
+    - cron: '*/30 * * * *'   # hər 30 dəqiqə
   workflow_dispatch:          # manual başlatma imkanı
 
 permissions:
