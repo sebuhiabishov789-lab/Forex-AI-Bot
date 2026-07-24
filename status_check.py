@@ -14,7 +14,8 @@ def get_offset():
     if OFFSET_FILE.exists():
         try:
             return int(OFFSET_FILE.read_text().strip())
-        except:
+        except (ValueError, OSError) as e:
+            print(f"Offset faylı oxunmadı, 0-dan başlanır: {e}")
             return 0
     return 0
 
@@ -46,6 +47,8 @@ def run():
             
             if st is None:
                 msg = "⚠️ Data yoxdur - bot yenilənir, 1 dəqiqə sonra yenidən A yaz"
+            elif st.get("is_synthetic"):
+                msg = "⚠️ Hazırda real bazar datası əlçatan deyil (yfinance/Frankfurter cavab vermir). Göstəriləcək rəqəmlər etibarlı olmazdı, ona görə bu dəfə göndərilmir - bir az sonra yenidən 'A' yaz."
             else:
                 try:
                     price = float(st.get("current_price", 0))
