@@ -8,6 +8,12 @@ on:
 permissions:
   contents: write            # repo-ya push etmək icazəsi
 
+# daily_bot.yml və status_check.yml ilə EYNI qrup adı — üçü də main branch-a
+# push etdiyi üçün, aralarında növbələşmə lazımdır (yoxsa push conflict/race olur).
+concurrency:
+  group: forex-bot-repo-write
+  cancel-in-progress: false
+
 jobs:
   track:
     runs-on: ubuntu-latest
@@ -34,9 +40,23 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if [ -f signals_log.csv ]; then
             git add signals_log.csv
-            git diff --staged --quiet || git commit -m "Siqnal nəticələri yeniləndi"
-            git pull --rebase
-            git push
+            if git diff --staged --quiet; then
+              echo "Dəyişiklik yoxdur."
+            else
+              git commit -m "Siqnal nəticələri yeniləndi"
+              push_ok=false
+              for i in 1 2 3 4 5; do
+                if git pull --rebase origin main && git push origin main; then
+                  push_ok=true
+                  break
+                fi
+                echo "Push uğursuz oldu (cəhd $i/5), 5 saniyə sonra yenidən cəhd ediləcək..."
+                sleep 5
+              done
+              if [ "$push_ok" != "true" ]; then
+                echo "::warning::5 cəhddən sonra push uğursuz oldu, nəticələr bu run-da yenilənmədi."
+              fi
+            fi
           else
             echo "signals_log.csv hələ yaradılmayıb, commit ediləcək heç nə yoxdur."
           fi
