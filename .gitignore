@@ -14,9 +14,6 @@ venv/
 *.csv
 !signals_log.csv
 
-# Model cache
-tuned_params.json
-
 # OS
 .DS_Store
 Thumbs.db
