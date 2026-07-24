@@ -226,8 +226,8 @@ def main():
         return
 
     # SL/TP
-    sl = price - atr*1.5 if direction=="BUY" else price + atr*1.5
-    tp = price + atr*2.5 if direction=="BUY" else price - atr*2.5
+    sl = price - atr*market_utils.SL_ATR_MULT if direction=="BUY" else price + atr*market_utils.SL_ATR_MULT
+    tp = price + atr*market_utils.TP_ATR_MULT if direction=="BUY" else price - atr*market_utils.TP_ATR_MULT
     lot = calculate_lot_size(price, sl)
     signal_id = get_next_signal_id()
 
