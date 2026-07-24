@@ -125,13 +125,13 @@ def run_backtest():
         direction = None
         if prob >= bot_config.BUY_THRESHOLD:
             direction = 'BUY'
-            sl, tp = price - atr * 1.5, price + atr * 2.5
+            sl, tp = price - atr * market_utils.SL_ATR_MULT, price + atr * market_utils.TP_ATR_MULT
         elif prob <= bot_config.SELL_THRESHOLD:
             direction = 'SELL'
-            sl, tp = price + atr * 1.5, price - atr * 2.5
+            sl, tp = price + atr * market_utils.SL_ATR_MULT, price - atr * market_utils.TP_ATR_MULT
 
         if direction:
-            outcome, pip_result_price_units = simulate_trade(test_reset, i, direction, price, sl, tp)
+            outcome, pip_result_price_units = simulate_trade(test_reset, i, direction, price, sl, tp, max_bars=market_utils.MAX_HOLD_BARS)
             pip_result = pip_result_price_units / PIP_VALUE - SPREAD_PIPS  # spread xərci hər girişdə çıxılır
             trades.append({
                 'time': row.get('Datetime', row.get('index')),
