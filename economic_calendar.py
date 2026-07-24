@@ -26,14 +26,16 @@ def _load_cache():
         ts = datetime.fromisoformat(data.get('timestamp', '2000-01-01T00:00:00+00:00'))
         if datetime.now(timezone.utc) - ts < timedelta(hours=CACHE_HOURS):
             return data.get('events', [])
-    except: pass
+    except Exception as e:
+        logger.warning(f"Təqvim cache oxunmadı: {e}")
     return None
 
 def _save_cache(events):
     try:
         with open(CACHE_FILE, 'w') as f:
             json.dump({'timestamp': datetime.now(timezone.utc).isoformat(), 'events': events}, f)
-    except: pass
+    except Exception as e:
+        logger.warning(f"Təqvim cache yazılmadı: {e}")
 
 def fetch_calendar_events(use_cache=True):
     if use_cache:
@@ -55,8 +57,11 @@ def fetch_calendar_events(use_cache=True):
 
 def _parse_event_time(raw_date):
     if not raw_date: return None
-    try: return datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
-    except: return None
+    try:
+        return datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+    except (ValueError, TypeError) as e:
+        logger.warning(f"Xəbər vaxtı parse olunmadı ({raw_date!r}): {e}")
+        return None
 
 def check_news_blackout():
     events = fetch_calendar_events()
