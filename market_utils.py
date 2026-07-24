@@ -28,15 +28,19 @@ FEATURES = [
     'ADX', 'BB_width', 'Session', 'ATR_ratio'
 ]
 
-# ~1.5 pip - tipik EUR/USD spreadindən (~1-1.5 pip) bir az yuxarı, ona görə
-# model spread xərcini örtməyən "uğurlu" hərəkətləri target kimi öyrənmir.
-TARGET_MOVE_THRESHOLD = 0.00015
+# Real ticarət qaydası ilə EYNİ barrier-lər (bot.py-dəki SL/TP ilə uyğunlaşdırılıb).
+# Target labeling da, canlı SL/TP də bu 3 konstantı istifadə edir ki, model
+# həqiqətən "bu qayda ilə ticarət etsəm uduram, ya uduzuram?" sualını öyrənsin.
+TP_ATR_MULT = 2.5
+SL_ATR_MULT = 1.5
+MAX_HOLD_BARS = 48  # 15 dəq bar * 48 = 12 saat - siqnalın "gözlənilən" maksimum ömrü
 
 TUNED_PARAMS_FILE = "tuned_params.json"
 TUNE_EVERY_HOURS = 24
 LAST_STATUS_FILE = "last_status.json"
 MODEL_CACHE_FILE = "model_cache.pkl"
 MODEL_RETRAIN_EVERY_HOURS = float(os.environ.get('MODEL_RETRAIN_EVERY_HOURS', '6'))
+
 
 # --- Indiqatorlar ---
 def compute_rsi(close, period=14):
@@ -83,8 +87,9 @@ def load_raw_data():
     """Returns (DataFrame, is_synthetic: bool). is_synthetic=True mənası: bu data
     real bazar datası DEYİL, yalnız fallback üçün uydurulmuş random-walk-dır və
     ONUN ÜZƏRİNDƏ TİCARƏT SİQNALI GÖNDƏRİLMƏMƏLİDİR."""
-    # 1. Önce yfinance dene
-    for days in [90, 60, 45]:
+    # 1. Önce yfinance dene (15m interval Yahoo-da maks. 60 günlük tarixçəyə icazə
+    # verir - 90 gün istəmək HƏR DƏFƏ uğursuz olurdu və lazımsız ERROR logu yaradırdı)
+    for days in [58, 45, 30]:
         try:
             data = yf.download('EURUSD=X', period=f'{days}d', interval='15m', auto_adjust=True, progress=False, threads=False)
             if data is None or data.empty or len(data) < 200:
@@ -183,6 +188,51 @@ def get_multi_timeframe_trends(data):
     tfs = {"15 deq":"15min","30 deq":"30min","1 saat":"1h","4 saat":"4h","1 gun":"1D"}
     return {k: get_trend_label(data, v) for k, v in tfs.items()}
 
+def compute_triple_barrier_target(df, tp_mult=TP_ATR_MULT, sl_mult=SL_ATR_MULT, max_hold=MAX_HOLD_BARS):
+    """Hər bar üçün: əgər bu anda LONG açılsaydı (SL = sl_mult*ATR aşağı,
+    TP = tp_mult*ATR yuxarı), qiymət max_hold bar ərzində əvvəlcə TP-yə,
+    yoxsa SL-ə toxunardı? Bu, bot.py-dəki real SL/TP qaydasının EYNİSİDİR
+    (əvvəlki versiyada target sadəcə "növbəti 1 saatda kiçik pip hərəkəti"
+    idi, real ticarət nəticəsi ilə demək olar əlaqəsi yox idi).
+
+    Qaytarır: (target array, valid mask). Nə TP, nə də SL max_hold bar
+    ərzində toxunulmayan barlar 'qeyri-müəyyən' sayılır və valid=False olur —
+    bunlar təlimə daxil edilmir (nə uduzur, nə udur, sadəcə bağlanmır).
+
+    MƏHDUDİYYƏT: bu label yalnız LONG mövqe üçün dəqiqdir. SELL siqnalları
+    üçün botda "ehtimal aşağıdırsa qısa aç" məntiqi işlədilir - bu, SL/TP
+    məsafələri asimmetrik olduğuna görə (1.5x vs 2.5x ATR) LONG-un tam əksi
+    deyil, təxmini (approksimasiya) əlaqədir. Symmetric olmayan barrier üçün
+    tam dəqiq SHORT label-i ayrıca hesablamaq mümkündür, amma mürəkkəbliyi
+    artırdığından hazırkı versiyada bu sadələşdirmə saxlanılıb.
+    """
+    high, low, atr = df['High'].values, df['Low'].values, df['ATR'].values
+    entry = df['Close'].values
+    n = len(df)
+    target = np.zeros(n)
+    valid = np.zeros(n, dtype=bool)
+
+    for i in range(n - 1):
+        a = atr[i]
+        if np.isnan(a) or a <= 0:
+            continue
+        tp_level = entry[i] + tp_mult * a
+        sl_level = entry[i] - sl_mult * a
+        end = min(i + 1 + max_hold, n)
+        w_high, w_low = high[i+1:end], low[i+1:end]
+        if len(w_high) == 0:
+            continue
+        tp_hits = np.where(w_high >= tp_level)[0]
+        sl_hits = np.where(w_low <= sl_level)[0]
+        first_tp = tp_hits[0] if len(tp_hits) else np.inf
+        first_sl = sl_hits[0] if len(sl_hits) else np.inf
+        if first_tp == np.inf and first_sl == np.inf:
+            continue  # max_hold ərzində heç biri toxunulmayıb - qeyri-müəyyən, atılır
+        target[i] = 1.0 if first_tp < first_sl else 0.0
+        valid[i] = True
+
+    return target, valid
+
 def build_features(data):
     df = data.copy()
     df['Return'] = df['Close'].pct_change()
@@ -202,13 +252,13 @@ def build_features(data):
     df['BB_width'] = compute_bollinger_width(df['Close']).fillna(0)
     df['Session'] = get_market_session_vectorized(df.index)
     df['ATR_ratio'] = df['ATR'] / df['ATR'].rolling(50).median().replace(0, np.nan)
-    df['Future_return'] = df['Close'].shift(-4) / df['Close'] - 1
-    # Əvvəlki hədd (0.00005 ~ 0.5 pip) tipik spreaddən (~1-1.5 pip) kiçik idi - model
-    # praktik olaraq gürültünü (noise) öyrənə bilirdi. TARGET_MOVE_THRESHOLD indi
-    # tipik spread + kiçik marja səviyyəsindədir ki, "uğurlu" kimi etiketlənən
-    # hərəkət real ticarət xərcini örtsün.
-    df['Target'] = (df['Future_return'] > TARGET_MOVE_THRESHOLD).astype(int)
+    # Köhnə target (0.5 pip-lik 1 saatlıq mikro-hərəkət) real SL/TP qaydası ilə
+    # uyğun gəlmirdi (bax: compute_triple_barrier_target docstring-i). İndi target
+    # birbaşa "bu barda LONG açsaydım, TP-yə SL-dən əvvəl çatardımmı?" sualıdır.
     df.dropna(inplace=True)
+    tb_target, tb_valid = compute_triple_barrier_target(df)
+    df['Target'] = tb_target.astype(int)
+    df = df.loc[tb_valid].copy()
     return df
 
 def build_rf(params=None):
