@@ -27,6 +27,9 @@ if not status:
     st.error("Data yüklənmədi - yfinance bloklanıb, 1 dəq sonra yenilə")
     st.stop()
 
+if status.get('is_synthetic'):
+    st.error("⚠️ DİQQƏT: Bu, real bazar datası DEYİL — yfinance/Frankfurter uğursuz olduğu üçün sintetik (uydurma) datadır. Göstərilən qiymət, model proqnozu və qrafik ETİBARLI DEYİL, yalnız sistemin işlədiyini göstərir.")
+
 data = status['data'].tail(500)
 price = status['current_price']
 prob = status['prob']
